@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "Careers")(type "KiCad")(uri "/home/robbie/Downloads/Careers")(options "")(descr ""))
+)
