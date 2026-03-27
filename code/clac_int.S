@@ -50,6 +50,7 @@ DIV_TMP		= $10	; Two-byte
 MUL_FAST_ARG1	= $12	; Two-byte buffer for ARG1 input for mul_fast operation
 MUL_FAST_ARG2	= $14	; Two-byte buffer for ARG2 input for mul_fast operation
 MUL_FAST_RESULT	= $16	; Two-byte buffer for result of mul_fast operation
+MUL_FAST_LOOP_COUNT	= $18	; One-byte counter for the loop iters for mul_fast operation
 
 ; ========================================
 
@@ -149,15 +150,15 @@ disp_init_loop:
 	LDA CALC_RESULT + 1
 	TAX
 
-	LDA #$C0
-	STA CALC_ARG2 + 0
-	LDA #$02
-	STA CALC_ARG2 + 1
-
 	LDA #$41
 	STA CALC_ARG1 + 0
 	LDA #$01
 	STA CALC_ARG1 + 1
+
+	LDA #$C0
+	STA CALC_ARG2 + 0
+	LDA #$02
+	STA CALC_ARG2 + 1
 
 	JSR op_add
 	LDA CALC_RESULT + 0
@@ -182,6 +183,32 @@ disp_init_loop:
 	TAY
 	LDA CALC_RESULT + 1
 	TAX
+
+	LDA #$FF
+	STA CALC_ARG1 + 0
+	LDA #$FF
+	STA CALC_ARG1 + 1
+
+	LDA #$C0
+	STA CALC_ARG2 + 0
+	LDA #$02
+	STA CALC_ARG2 + 1
+
+	JSR op_mul_fast
+	LDA CALC_RESULT + 0
+	TAY
+	LDA CALC_RESULT + 1
+	TAX
+
+	LDA #$41
+	STA CALC_ARG1 + 0
+	LDA #$01
+	STA CALC_ARG1 + 1
+
+	LDA #$C0
+	STA CALC_ARG2 + 0
+	LDA #$02
+	STA CALC_ARG2 + 1
 
 	JSR op_div
 	LDA CALC_RESULT + 0
@@ -369,7 +396,10 @@ op_mul_fast:
 
 	LDA #$00
 	STA MUL_FAST_RESULT + 0
-	STA MUL_FAST_RESULT + 0
+	STA MUL_FAST_RESULT + 1
+
+	LDA #$10 ; Loop 16 times, once for each bit in ARG2
+	STA MUL_FAST_LOOP_COUNT
 
 op_mul_fast__loop:
 	LDA MUL_FAST_ARG1 + 0
@@ -426,7 +456,7 @@ op_mul_fast__shift:
 	LDA #$00
 	STA CALC_ARG2 + 1
 
-	jsr op_shr
+	jsr op_shl
 
 	LDA CALC_RESULT + 0
 	STA MUL_FAST_ARG2 + 0
@@ -434,10 +464,8 @@ op_mul_fast__shift:
 	LDA CALC_RESULT + 1
 	STA MUL_FAST_ARG2 + 1
 
-	LDA MUL_FAST_ARG2 + 0
-	BNE op_mul_fast__loop ; If MUL_FAST_ARG2 + 0 still has set bits in it we're not done
-	LDA MUL_FAST_ARG2 + 1
-	BNE op_mul_fast__loop ; If MUL_FAST_ARG2 + 1 still has set bits in it we're not done
+	DEC MUL_FAST_LOOP_COUNT
+	BNE op_mul_fast__loop ; If MUL_FAST_LOOP_COUNT != 0 we're not done
 
 	JMP op_mul_fast__done
 
@@ -517,9 +545,52 @@ op_neg:
 
 	JSR op_add
 
+; ARG1 >> ARG2 (MSByte of ARG2 ignored)
+; Performs sign extension
+op_shr:
+	LDA CALC_ARG1 + 0
+	STA CALC_RESULT + 0
+	LDA CALC_ARG1 + 1
+	STA CALC_RESULT + 1
+
+	LDA CALC_ARG2 + 0
+	TAX
+
+	LDA CALC_RESULT + 1
+	BIT bits_table + 7 ; Check top bit of MSByte
+	; If top bit is zero, shift without sign extension
+	BEQ op_shr__loop_guard_zero_extend
+
+; Loop with sign extension
+op_shr__loop_guard_one_extend:
+	TXA
+	BEQ op_shr__done
+
+	SEC
+	ROR CALC_RESULT + 1
+	ROR CALC_RESULT + 0
+	DEX
+
+	JMP op_shr__loop_guard_zero_extend
+
+; Loop without sign extension
+op_shr__loop_guard_zero_extend:
+	TXA
+	BEQ op_shr__done
+
+	CLC
+	ROR CALC_RESULT + 1
+	ROR CALC_RESULT + 0
+	DEX
+
+	JMP op_shr__loop_guard_zero_extend
+
+op_shr__done:
+	RTS
+
+
 ; ARG1 << ARG2 (MSByte of ARG2 ignored)
-op_shr:	; WIP
-op_shl: ; WIP
+op_shl:
 	LDA CALC_ARG1 + 0
 	STA CALC_RESULT + 0
 	LDA CALC_ARG1 + 1
@@ -533,8 +604,8 @@ op_shl__loop_guard:
 	BEQ op_shl__done
 op_shl__loop:
 	CLC
-	ROR CALC_RESULT + 0
-	ROR CALC_RESULT + 1
+	ROL CALC_RESULT + 0
+	ROL CALC_RESULT + 1
 	DEX
 
 	JMP op_shl__loop_guard
@@ -665,6 +736,13 @@ keypad_irq:
 
 bits_table:
 	DC.B %00000001
+	DC.B %00000010
+	DC.B %00000100
+	DC.B %00001000
+	DC.B %00010000
+	DC.B %00100000
+	DC.B %01000000
+	DC.B %10000000
 symbol_table:
 	DC.B "9e6_3E.E784512<0<+^-N*%/RTRRSCDFCP:N;IPS"
 number_table:

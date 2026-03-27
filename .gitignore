@@ -4,3 +4,6 @@ Clock_Addon/Clock_Addon-backups
 Punchcard_Reader/Punchcard_Reader-backups
 
 *.lck
+asm.sym
+asm.lst
+asm.bin
