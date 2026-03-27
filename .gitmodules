@@ -1,3 +1,6 @@
 [submodule "debugger"]
 	path = debugger
 	url = https://github.com/byobc/debugger.git
+[submodule "dasm"]
+	path = dasm
+	url = https://github.com/dasm-assembler/dasm.git
