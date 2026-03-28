@@ -236,6 +236,11 @@ skip_redraw:
 draw_display:
 	RTS
 
+; Spec for all operations
+; Values of CALC_ARG1 and CALC_ARG2 are unmodified and must be restored by the callee
+; Values of A/X/Y registers and P are undefined and may be modified by the callee
+; Value of CALC_RESULT are modified by the callee to save the result
+
 ; Add operation
 op_add:
 	CLC
@@ -261,116 +266,6 @@ op_sub:
 	LDA CALC_ARG1 + 1
 	SBC CALC_ARG2 + 1
 	STA CALC_RESULT + 1
-
-	RTS
-
-; Mul operation
-op_mul:
-	JSR op_lt
-	LDA CALC_RESULT + 0
-	BEQ op_mul_arg2_minor
-
-op_mul_arg1_minor:
-	LDA CALC_ARG1 + 0
-	STA MUL_MINOR + 0
-	PHA
-	LDA CALC_ARG1 + 1
-	STA MUL_MINOR + 1
-	PHA
-
-	LDA #$0
-	STA CALC_ARG1 + 0
-	STA CALC_ARG1 + 1
-
-op_mul_arg1_minor_loop:
-	LDA MUL_MINOR + 0
-	BNE op_mul_arg1_minor_no_carry
-	TAX								; DEC A
-	DEX
-	TXA
-	STA MUL_MINOR + 0
-	
-	LDA MUL_MINOR + 1
-	BEQ op_mul_arg1_minor_done
-	TAX								; DEC A
-	DEX
-	TXA
-	STA MUL_MINOR + 1
-
-	JMP op_mul_arg1_minor_did_carry
-
-op_mul_arg1_minor_no_carry:
-	TAX								; DEC A
-	DEX
-	TXA
-	STA MUL_MINOR + 0
-op_mul_arg1_minor_did_carry:
-	JSR op_add
-
-	LDA CALC_RESULT + 0
-	STA CALC_ARG1 + 0
-	LDA CALC_RESULT + 1
-	STA CALC_ARG1 + 1
-
-	JMP op_mul_arg1_minor_loop
-
-op_mul_arg1_minor_done:
-	PLA
-	STA CALC_ARG1 + 1
-	PLA
-	STA CALC_ARG1 + 0
-
-	RTS
-
-op_mul_arg2_minor:
-	LDA CALC_ARG2 + 0
-	STA MUL_MINOR + 0
-	PHA
-	LDA CALC_ARG2 + 1
-	STA MUL_MINOR + 1
-	PHA
-
-	LDA #$0
-	STA CALC_ARG2 + 0
-	STA CALC_ARG2 + 1
-
-op_mul_arg2_minor_loop:
-	LDA MUL_MINOR + 0
-	BNE op_mul_arg2_minor_no_carry
-	TAX								; DEC A
-	DEX
-	TXA
-	STA MUL_MINOR + 0
-	
-	LDA MUL_MINOR + 1
-	BEQ op_mul_arg2_minor_done
-	TAX								; DEC A
-	DEX
-	TXA
-	STA MUL_MINOR + 1
-
-	JMP op_mul_arg2_minor_did_carry
-
-op_mul_arg2_minor_no_carry:
-	TAX								; DEC A
-	DEX
-	TXA
-	STA MUL_MINOR + 0
-op_mul_arg2_minor_did_carry:
-	JSR op_add
-
-	LDA CALC_RESULT + 0
-	STA CALC_ARG2 + 0
-	LDA CALC_RESULT + 1
-	STA CALC_ARG2 + 1
-
-	JMP op_mul_arg2_minor_loop
-
-op_mul_arg2_minor_done:
-	PLA
-	STA CALC_ARG2 + 1
-	PLA
-	STA CALC_ARG2 + 0
 
 	RTS
 
