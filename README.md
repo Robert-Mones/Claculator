@@ -1,6 +1,10 @@
 # Claculator
 A reverse Polish notation calculator with added features such as comparisons, branching, and custom recursive operators taken from the Clac project from the 15-122 course at Carnegie Mellon University. The project is built around a 65C02 microprocessor with a custom architecture to reduce CPU load by making memory-mapped peripherals operate asynchronously. All logic and board design was done in KiCAD. All 3D modeling was done in Autodesk Fusion.
 
+<p align="center">Mostly assembled Claculator</p>
+
+![Mostly assembled Claculator](https://raw.githubusercontent.com/Robert-Mones/Claculator/main/Images/Assembled_1.jpg)
+
 ## Display
 The seven-segment display board supports nine numeric displays, each with eight digits. It contains an SRAM chip which interfaces to the rest of the computer as a memory-mapped peripheral. When selected, the address and data bus is connected to the computer to be written to (but not read from) transparently. When the memory is not selected, a counter with a selectable clock source loops through each of the seventy-two digits, reads the corresponding byte from memory, and drives the corresponding digit using one bit for each segement (seven for the numeric part, one for the decimal point) with an array of P- and N-channel MOSFETs.
 
@@ -24,7 +28,7 @@ The keypad input board supports up to sixteen rows (5 are implemented), each wit
 ![The back of the keypad, showing the logic chips and hot-swappable key sockets](https://raw.githubusercontent.com/Robert-Mones/Claculator/main/Images/Keypad_Back.jpg)
 
 ## Chassis
-I have placed an order from SendCutSend to have a chassis built for the Claculator out of 1/8"-thick 304 stainless steel (except for the keypad plate which must be 0.06" thick to fit the keys). It has hinges at the top back to open the Claculator from the front to enable demonstrations and debugging more easily. It will be very heavy and was very expensive but it's for the bit.
+The chassis for the Claculator was manufactured by SendCutSend out of 1/8"-thick 304 stainless steel (except for the keypad plate which must be 0.06" thick to fit the keys). It has hinges at the top back to open the Claculator from the front to enable demonstrations and debugging more easily. It is very heavy (8lbs of sheet metal) and was very expensive but it's worth it for the bit.
 
 <p align="center">Model of the assembled Claculator</p>
 
