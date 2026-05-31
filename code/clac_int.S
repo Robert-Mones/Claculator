@@ -53,6 +53,7 @@ MUL_FAST_RESULT	= $16	; Two-byte buffer for result of mul_fast operation
 MUL_FAST_LOOP_COUNT	= $18	; One-byte counter for the loop iters for mul_fast operation
 DIV_DIVISOR_SHIFT_COUNT = $19 ; One-byte counter for the loop iters for the div operation
 DIV_DIVISOR	= $1A	; Two-byte buffer for the divisor
+DIV_MOD = $1C	; One-byte flag set if we're performing mod instead of div
 
 ; ========================================
 
@@ -417,6 +418,142 @@ disp_init_loop:
 	LDA CALC_RESULT + 1
 	TAX
 
+	; 15 % 3 (= 0)
+	LDA #$0F
+	STA CALC_ARG1 + 0
+	LDA #$00
+	STA CALC_ARG1 + 1
+
+	LDA #$03
+	STA CALC_ARG2 + 0
+	LDA #$00
+	STA CALC_ARG2 + 1
+
+	JSR op_mod
+	LDA CALC_RESULT + 0
+	TAY
+	LDA CALC_RESULT + 1
+	TAX
+
+	; 16 % 3 (= 1)
+	LDA #$10
+	STA CALC_ARG1 + 0
+	LDA #$00
+	STA CALC_ARG1 + 1
+
+	LDA #$03
+	STA CALC_ARG2 + 0
+	LDA #$00
+	STA CALC_ARG2 + 1
+
+	JSR op_mod
+	LDA CALC_RESULT + 0
+	TAY
+	LDA CALC_RESULT + 1
+	TAX
+
+	; 17 % 3 (= 2)
+	LDA #$11
+	STA CALC_ARG1 + 0
+	LDA #$00
+	STA CALC_ARG1 + 1
+
+	LDA #$03
+	STA CALC_ARG2 + 0
+	LDA #$00
+	STA CALC_ARG2 + 1
+
+	JSR op_mod
+	LDA CALC_RESULT + 0
+	TAY
+	LDA CALC_RESULT + 1
+	TAX
+
+	; -17 % 3 (= -2)
+	LDA #$EF
+	STA CALC_ARG1 + 0
+	LDA #$FF
+	STA CALC_ARG1 + 1
+
+	LDA #$03
+	STA CALC_ARG2 + 0
+	LDA #$00
+	STA CALC_ARG2 + 1
+
+	JSR op_mod
+	LDA CALC_RESULT + 0
+	TAY
+	LDA CALC_RESULT + 1
+	TAX
+
+	; 17 % -3 (= 2)
+	LDA #$11
+	STA CALC_ARG1 + 0
+	LDA #$00
+	STA CALC_ARG1 + 1
+
+	LDA #$FD
+	STA CALC_ARG2 + 0
+	LDA #$FF
+	STA CALC_ARG2 + 1
+
+	JSR op_mod
+	LDA CALC_RESULT + 0
+	TAY
+	LDA CALC_RESULT + 1
+	TAX
+
+	; -17 % -3 (= -2)
+	LDA #$EF
+	STA CALC_ARG1 + 0
+	LDA #$FF
+	STA CALC_ARG1 + 1
+
+	LDA #$03
+	STA CALC_ARG2 + 0
+	LDA #$00
+	STA CALC_ARG2 + 1
+
+	JSR op_mod
+	LDA CALC_RESULT + 0
+	TAY
+	LDA CALC_RESULT + 1
+	TAX
+
+	; 15165 % 271 (= 260)
+	LDA #$3D
+	STA CALC_ARG1 + 0
+	LDA #$3B
+	STA CALC_ARG1 + 1
+
+	LDA #$0F
+	STA CALC_ARG2 + 0
+	LDA #$01
+	STA CALC_ARG2 + 1
+
+	JSR op_mod
+	LDA CALC_RESULT + 0
+	TAY
+	LDA CALC_RESULT + 1
+	TAX
+
+	; -15165 % 271 (= -260)
+	LDA #$C3
+	STA CALC_ARG1 + 0
+	LDA #$C4
+	STA CALC_ARG1 + 1
+
+	LDA #$0F
+	STA CALC_ARG2 + 0
+	LDA #$01
+	STA CALC_ARG2 + 1
+
+	JSR op_mod
+	LDA CALC_RESULT + 0
+	TAY
+	LDA CALC_RESULT + 1
+	TAX
+
 	NOP
 
 
@@ -585,8 +722,18 @@ op_mul_fast__done:
 
 	RTS
 
+; Signed mod operation (piggyback off op_div)
+op_mod:
+	LDA #$01
+	STA DIV_MOD
+	JMP op_div__after_mod
+
 ; Signed div operation
 op_div:
+	LDA #$00
+	STA DIV_MOD
+
+op_div__after_mod:
 	LDA CALC_ARG1 + 0
 	STA DIV_DIVIDEND + 0
 	PHA
@@ -622,7 +769,7 @@ op_div:
 	LDA CALC_RESULT + 1
 	STA DIV_DIVIDEND + 1
 
-	INC DIV_RESULT_NEG ; Increment because we need to negate the result now
+	INC DIV_RESULT_NEG ; Increment because we need to negate the result now for either div or mod
 
 	; Dividend is now negative
 op_div__dividend_negative:
@@ -642,9 +789,16 @@ op_div__dividend_negative:
 	LDA CALC_RESULT + 1
 	STA DIV_DIVISOR + 1
 
+	LDA DIV_MOD
+	BNE op_div__divisor_negative_mod
+
 	LDA #$01
 	EOR DIV_RESULT_NEG ; XOR because we may have already incremented it
 	STA DIV_RESULT_NEG
+
+	; Skip to here without XORing the flag if we're taking the mod
+	; For mod, we only care about the sign of the dividend
+op_div__divisor_negative_mod:
 
 	; Divisor is now negative
 op_div__divisor_negative:
@@ -779,18 +933,32 @@ op_div__divide_loop_iter_done:
 op_div__divide_done:
 
 	; Put div result in calc result first
+	LDA DIV_MOD
+	BNE op_div__store_mod_result
+
+	; If we're performing a div, store the result of the div
 	LDA DIV_RESULT + 0
 	STA CALC_RESULT + 0
 	LDA DIV_RESULT + 1
 	STA CALC_RESULT + 1
+	JMP op_div__done_storing_result
+
+op_div__store_mod_result:
+	; If we're performing a mod, store the remaining dividend as the result
+	LDA DIV_DIVIDEND + 0
+	STA CALC_RESULT + 0
+	LDA DIV_DIVIDEND + 1
+	STA CALC_RESULT + 1
+
+op_div__done_storing_result:
 
 	LDA DIV_RESULT_NEG
 	BEQ op_div__negation_done
 
 	; Need to negate the result
-	LDA DIV_RESULT + 0
+	LDA CALC_RESULT + 0
 	STA CALC_ARG1 + 0
-	LDA DIV_RESULT + 1
+	LDA CALC_RESULT + 1
 	STA CALC_ARG1 + 1
 
 	JSR op_neg
