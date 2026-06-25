@@ -1,28 +1,28 @@
 	PROCESSOR 6502
 
-KEYPAD_DATA	= $4000
-KEYPAD_STAT	= $4001	; DO NOT USE
+KEYPAD_DATA	= $4800
+KEYPAD_STAT	= $4801	; DO NOT USE
 
-DISPLAY_RAM = $5000
+DISPLAY_RAM = $4400
 
-VIA_REG_B		= $6000
-VIA_REG_A		= $6001
-VIA_DDR_B		= $6002
-VIA_DDR_A		= $6003
-VIA_T1_COUNT_L	= $6004
-VIA_T1_COUNT_H	= $6005
-VIA_T1_LATCH_L	= $6006
-VIA_T1_LATCH_H	= $6007
-VIA_SR			= $600A
-VIA_AUX_CTRL	= $600B
-VIA_PER_CTRL	= $600C
-VIA_INT_FLAG	= $600D
-VIA_INT_ENBL	= $600E
+VIA_REG_B		= $6C00
+VIA_REG_A		= $6C01
+VIA_DDR_B		= $6C02
+VIA_DDR_A		= $6C03
+VIA_T1_COUNT_L	= $6C04
+VIA_T1_COUNT_H	= $6C05
+VIA_T1_LATCH_L	= $6C06
+VIA_T1_LATCH_H	= $6C07
+VIA_SR			= $6C0A
+VIA_AUX_CTRL	= $6C0B
+VIA_PER_CTRL	= $6C0C
+VIA_INT_FLAG	= $6C0D
+VIA_INT_ENBL	= $6C0E
 
-;ACIA_DATA 	= $5000
-;ACIA_STATUS	= $5001
-;ACIA_CMD	= $5002
-;ACIA_CTRL	= $5003
+;ACIA_DATA 	= $5C00
+;ACIA_STATUS	= $5C01
+;ACIA_CMD	= $5C02
+;ACIA_CTRL	= $5C03
 
 LCD_EN_LOW		= (0 << 7)
 LCD_EN_HIGH		= (1 << 7)
@@ -44,64 +44,15 @@ start:
 	LDX #$FF				; Initialize the stack pointer
 	TXS
 
-	LDA #$FB				; Set all besides A2 on the VIA to be outputs
-	STA VIA_DDR_A
 	LDA #$FF
+	STA VIA_DDR_A
+	LDA #$7F				; Set all besides B7 on the VIA to be outputs
 	STA VIA_DDR_B
-
-	LDX #[LCD_EN_HIGH | LCD_RW_WRITE | LCD_RS_CMD]
-	LDY #[LCD_EN_LOW  | LCD_RW_WRITE | LCD_RS_CMD]
-
-	LDA #%00111100			; 8-bit width, 2-line display, 5x10 font size
-	STA VIA_REG_B			; Set the data lines to the correct command
-	STX VIA_REG_A			; Turn enable on, set control signals
-	STY VIA_REG_A			; Turn enable off
-
-	LDA #%00000001			; Clear display
-	STA VIA_REG_B
-	STX VIA_REG_A
-	STY VIA_REG_A
-
-	LDA #80					; Wait for the display to be ready again
-delay_loop:
-	ADC #1
-	BCC delay_loop
-
-	LDA #%00000110			; Increment DDRAM pointer, do not shift display
-	STA VIA_REG_B
-	STX VIA_REG_A
-	STY VIA_REG_A
-
-	LDA #%00001110			; Set display on, cursor on, enable cursor blink
-	STA VIA_REG_B
-	STX VIA_REG_A
-	STY VIA_REG_A
-
-	; Now initialize the ACIA
-	/*
-	STA ACIA_STATUS			; Software reset
-
-	LDA #%00010000			; 1 stop bit, 8-bit word length, use baud rate, 115200 baud
-	STA ACIA_CTRL
-
-	LDA #%00001001			; IRQB enabled, data terminal ready
-	STA ACIA_CMD
-	*/
-	
-	; Now initialize the display
-	LDY #72
-	LDA #$0
-disp_init_loop
-	DEY
-	STA DISPLAY_RAM,y
-	BNE disp_init_loop
-	STY DISPLAY_INDEX
-
 
 ; Run the main loop
 loop:
-	LDA VIA_REG_A			; Check the VIA pin A2 for the status of the keypad
-	AND #$04
+	LDA VIA_REG_B			; Check the VIA pin B7 for the status of the keypad
+	AND #$80
 	BNE skip_read_key		; If the interrupt bit is 1, go back to the beginning of loop
 	JSR read_key			; If the interrupt bit is 0, read the keypress
 skip_read_key:
@@ -113,8 +64,8 @@ read_key:
 	LDY KEYPAD_DATA			; Read the key group index
 
 read_key_wait:
-	LDA VIA_REG_A
-	AND #$04
+	LDA VIA_REG_B
+	AND #$80
 	BNE read_key_wait		; If the second byte isn't ready, wait
 
 	LDX KEYPAD_DATA			; Read the key down bitmask
@@ -137,8 +88,6 @@ read_key_pressed_loop:
 	INY
 	JMP read_key_pressed_loop
 read_key_found:
-	LDA symbol_table,y
-	jsr print				; Print the key index
 
 	LDA number_table,y
 	LDY DISPLAY_INDEX
@@ -162,17 +111,6 @@ segment_print:
 	PLA
 	rts
 
-; Prints the character in the A register to the display
-print:
-	PHA
-	STA VIA_REG_B	; Set the data lines to the character we want to show
-	LDA #[LCD_EN_HIGH | LCD_RW_WRITE | LCD_RS_DATA]
-	STA VIA_REG_A	; Turn enable on, set control signals
-	LDA #[LCD_EN_LOW  | LCD_RW_WRITE | LCD_RS_DATA]
-	STA VIA_REG_A	; Turn enable off
-	PLA
-	rts
-
 
 ; ================== ;
 ; Interrupt handlers ;
@@ -188,10 +126,6 @@ irq_handler:
 	LDA VIA_INT_FLAG
 	AND #[1 << 6]
 	BNE timer_irq
-
-	LDA VIA_REG_A
-	AND #$04
-	BEQ keypad_irq
 
 	PLA
 	RTI
