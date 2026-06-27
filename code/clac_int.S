@@ -29,22 +29,32 @@ STACK_POINTER   = $01	; One-byte pointer to the operand stack
 
 CALC_ARG1	= $02	; Two-byte arg for calculations
 CALC_ARG2	= $04	; Two-byte arg for calculations
-CALC_RESULT	= $06	; Two-byte result for calculations
+CALC_RESULT1	= $06	; Two-byte result for calculations
 
 INPUT_BUFFER	= $08	; Two-byte buffer for entering an operand
 RENDER_NEEDED	= $0A	; One-byte flag indicating a redraw of the display is needed
 
 MUL_MINOR	= $0B	; Two-byte buffer for the smaller of the two operands for mul
-DIV_RESULT_NEG	= $0D	; One-byte flag indicating that the result needs to be negated
+
+DIV_DIVISOR_NEG	= $0D	; One-byte flag indicating that the divisor was negated
 DIV_RESULT	= $0E	; Two-byte buffer for the result of the division operation
 DIV_DIVIDEND	= $10	; Two-byte buffer for the dividend
+
 MUL_FAST_ARG1	= $12	; Two-byte buffer for ARG1 input for mul_fast operation
 MUL_FAST_ARG2	= $14	; Two-byte buffer for ARG2 input for mul_fast operation
 MUL_FAST_RESULT	= $16	; Two-byte buffer for result of mul_fast operation
 MUL_FAST_LOOP_COUNT	= $18	; One-byte counter for the loop iters for mul_fast operation
+
 DIV_DIVISOR_SHIFT_COUNT = $19 ; One-byte counter for the loop iters for the div operation
 DIV_DIVISOR	= $1A	; Two-byte buffer for the divisor
-DIV_MOD = $1C	; One-byte flag set if we're performing mod instead of div
+DIV_DIVIDEND_NEG	= $1C	; One-byte flag indicating that the dividend was negated
+
+STACK_SIZE = $1D	; One-byte size of the stack, should be incremented in multiples of 4 and should not be incremented above 0xFC to prevent overflow
+CALC_RESULT2	= $1E	; Two-byte result for calculations that produce two results
+STACK_TEMP = $20	; Four-byte temp variable to copy values into before they're pushed onto the stack
+
+STACK_START = $0200	; 252-byte operand stack
+DISPLAY_BUFFER_START = $0300 ; 72-byte buffer of the display RAM, first byte is MSDigit of #8 in stack
 
 ; ========================================
 
@@ -55,38 +65,10 @@ start:
 	LDX #$FF				; Initialize the stack pointer
 	TXS
 
-	LDA #$FB				; Set all besides A2 on the VIA to be outputs
-	STA VIA_DDR_A
 	LDA #$FF
+	STA VIA_DDR_A
+	LDA #$7F				; Set all besides B7 on the VIA to be outputs
 	STA VIA_DDR_B
-
-	LDX #[LCD_EN_HIGH | LCD_RW_WRITE | LCD_RS_CMD]
-	LDY #[LCD_EN_LOW  | LCD_RW_WRITE | LCD_RS_CMD]
-
-	LDA #%00111100			; 8-bit width, 2-line display, 5x10 font size
-	STA VIA_REG_B			; Set the data lines to the correct command
-	STX VIA_REG_A			; Turn enable on, set control signals
-	STY VIA_REG_A			; Turn enable off
-
-	LDA #%00000001			; Clear display
-	STA VIA_REG_B
-	STX VIA_REG_A
-	STY VIA_REG_A
-
-	LDA #80					; Wait for the display to be ready again
-delay_loop:
-	ADC #1
-	BCC delay_loop
-
-	LDA #%00000110			; Increment DDRAM pointer, do not shift display
-	STA VIA_REG_B
-	STX VIA_REG_A
-	STY VIA_REG_A
-
-	LDA #%00001110			; Set display on, cursor on, enable cursor blink
-	STA VIA_REG_B
-	STX VIA_REG_A
-	STY VIA_REG_A
 
 	; Now initialize the ACIA
 	/*
@@ -121,27 +103,27 @@ disp_init_loop:
 	STA CALC_ARG2 + 1
 
 	JSR op_shl
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	LDA #$01
 	STA CALC_ARG2 + 0
 
 	JSR op_shl
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	LDA #$02
 	STA CALC_ARG2 + 0
 
 	JSR op_shl
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	LDA #$41
@@ -155,21 +137,21 @@ disp_init_loop:
 	STA CALC_ARG2 + 1
 
 	JSR op_add
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	JSR op_sub
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	JSR op_mul_fast
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	LDA #$FF
@@ -183,9 +165,9 @@ disp_init_loop:
 	STA CALC_ARG2 + 1
 
 	JSR op_mul_fast
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; -7 / -2 (= 3)
@@ -199,10 +181,10 @@ disp_init_loop:
 	LDA #$FF
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; 15122 / 213 (= 70)
@@ -216,10 +198,10 @@ disp_init_loop:
 	LDA #$00
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; 15123 / 213 (= 71)
@@ -233,10 +215,10 @@ disp_init_loop:
 	LDA #$00
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; -15122 / 213 (= -70)
@@ -250,10 +232,10 @@ disp_init_loop:
 	LDA #$00
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; -15123 / 213 (= -71)
@@ -267,10 +249,10 @@ disp_init_loop:
 	LDA #$00
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; 15122 / -213 (= -70)
@@ -284,10 +266,10 @@ disp_init_loop:
 	LDA #$FF
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; 15123 / -213 (= -71)
@@ -301,10 +283,10 @@ disp_init_loop:
 	LDA #$FF
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; -15122 / -213 (= 70)
@@ -318,10 +300,10 @@ disp_init_loop:
 	LDA #$FF
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; -15123 / -213 (= 71)
@@ -335,10 +317,10 @@ disp_init_loop:
 	LDA #$FF
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; 24241 / 971 (= 24)
@@ -352,10 +334,10 @@ disp_init_loop:
 	LDA #$03
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; -24241 / 971 (= -24)
@@ -369,10 +351,10 @@ disp_init_loop:
 	LDA #$03
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; 24241 / -971 (= -24)
@@ -386,10 +368,10 @@ disp_init_loop:
 	LDA #$FC
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; -24241 / -971 (= 24)
@@ -403,10 +385,10 @@ disp_init_loop:
 	LDA #$FC
 	STA CALC_ARG2 + 1
 
-	JSR op_div
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT1 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	TAX
 
 	; 15 % 3 (= 0)
@@ -420,10 +402,10 @@ disp_init_loop:
 	LDA #$00
 	STA CALC_ARG2 + 1
 
-	JSR op_mod
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT2 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT2 + 1
 	TAX
 
 	; 16 % 3 (= 1)
@@ -437,10 +419,10 @@ disp_init_loop:
 	LDA #$00
 	STA CALC_ARG2 + 1
 
-	JSR op_mod
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT2 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT2 + 1
 	TAX
 
 	; 17 % 3 (= 2)
@@ -454,10 +436,10 @@ disp_init_loop:
 	LDA #$00
 	STA CALC_ARG2 + 1
 
-	JSR op_mod
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT2 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT2 + 1
 	TAX
 
 	; -17 % 3 (= -2)
@@ -471,10 +453,10 @@ disp_init_loop:
 	LDA #$00
 	STA CALC_ARG2 + 1
 
-	JSR op_mod
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT2 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT2 + 1
 	TAX
 
 	; 17 % -3 (= 2)
@@ -488,10 +470,10 @@ disp_init_loop:
 	LDA #$FF
 	STA CALC_ARG2 + 1
 
-	JSR op_mod
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT2 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT2 + 1
 	TAX
 
 	; -17 % -3 (= -2)
@@ -505,10 +487,10 @@ disp_init_loop:
 	LDA #$00
 	STA CALC_ARG2 + 1
 
-	JSR op_mod
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT2 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT2 + 1
 	TAX
 
 	; 15165 % 271 (= 260)
@@ -522,10 +504,10 @@ disp_init_loop:
 	LDA #$01
 	STA CALC_ARG2 + 1
 
-	JSR op_mod
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT2 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT2 + 1
 	TAX
 
 	; -15165 % 271 (= -260)
@@ -539,10 +521,10 @@ disp_init_loop:
 	LDA #$01
 	STA CALC_ARG2 + 1
 
-	JSR op_mod
-	LDA CALC_RESULT + 0
+	JSR op_divmod
+	LDA CALC_RESULT2 + 0
 	TAY
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT2 + 1
 	TAX
 
 	NOP
@@ -550,8 +532,8 @@ disp_init_loop:
 
 ; Run the main loop
 loop:
-	LDA VIA_REG_A			; Check the VIA pin A2 for the status of the keypad
-	AND #$04
+	LDA VIA_REG_B			; Check the VIA pin A2 for the status of the keypad
+	AND #$80
 	BNE skip_read_key		; If the interrupt bit is 1, go back to the beginning of loop
 	JSR read_key			; If the interrupt bit is 0, read the keypress
 skip_read_key:
@@ -570,37 +552,41 @@ draw_display:
 ; Spec for all operations
 ; Values of CALC_ARG1 and CALC_ARG2 are unmodified and must be restored by the callee
 ; Values of A/X/Y registers and P are undefined and may be modified by the callee
-; Value of CALC_RESULT are modified by the callee to save the result
+; Value of CALC_RESULT1 is modified by the callee to save the result
+; Value of CALC_RESULT2 is optionally modified by the callee to save an auxilliary result
 
 ; Signed/unsigned add operation
+; Does not use CALC_RESULT2
 op_add:
 	CLC
 
 	LDA CALC_ARG1 + 0
 	ADC CALC_ARG2 + 0
-	STA CALC_RESULT + 0
+	STA CALC_RESULT1 + 0
 
 	LDA CALC_ARG1 + 1
 	ADC CALC_ARG2 + 1
-	STA CALC_RESULT + 1
+	STA CALC_RESULT1 + 1
 
 	RTS
 
 ; Signed/unsigned sub operation
+; Does not use CALC_RESULT2
 op_sub:
 	SEC
 
 	LDA CALC_ARG1 + 0
 	SBC CALC_ARG2 + 0
-	STA CALC_RESULT + 0
+	STA CALC_RESULT1 + 0
 
 	LDA CALC_ARG1 + 1
 	SBC CALC_ARG2 + 1
-	STA CALC_RESULT + 1
+	STA CALC_RESULT1 + 1
 
 	RTS
 
 ; Signed/unsigned fast (log-time) multiplication operation
+; Does not use CALC_RESULT2
 ; ARG1 is saved on stack, restored at end
 ; ARG2 is saved on stack, restored at end
 ; On every loop, ARG1 is shifted right, if LSB set, ARG2 is added to MUL_FAST_RESULT
@@ -646,9 +632,9 @@ op_mul_fast__add:
 	
 	JSR op_add
 
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	STA MUL_FAST_RESULT + 0
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	STA MUL_FAST_RESULT + 1
 
 op_mul_fast__add_done:
@@ -666,9 +652,9 @@ op_mul_fast__shift:
 
 	jsr op_shr
 
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	STA MUL_FAST_ARG1 + 0
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	STA MUL_FAST_ARG1 + 1
 
 	; MUL_FAST_ARG2 << 1 -> MUL_FAST_ARG2
@@ -684,10 +670,10 @@ op_mul_fast__shift:
 
 	jsr op_shl
 
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	STA MUL_FAST_ARG2 + 0
 
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	STA MUL_FAST_ARG2 + 1
 
 	DEC MUL_FAST_LOOP_COUNT
@@ -707,24 +693,16 @@ op_mul_fast__done:
 	STA CALC_ARG1 + 0
 
 	LDA MUL_FAST_RESULT + 0
-	STA CALC_RESULT + 0
+	STA CALC_RESULT1 + 0
 	LDA MUL_FAST_RESULT + 1
-	STA CALC_RESULT + 1
+	STA CALC_RESULT1 + 1
 
 	RTS
 
-; Signed mod operation (piggyback off op_div)
-op_mod:
-	LDA #$01
-	STA DIV_MOD
-	JMP op_div__after_mod
-
-; Signed div operation
-op_div:
-	LDA #$00
-	STA DIV_MOD
-
-op_div__after_mod:
+; Signed div and mod operation
+; Stores result of div in CALC_RESULT1
+; Stores result of mod in CALC_RESULT2
+op_divmod:
 	LDA CALC_ARG1 + 0
 	STA DIV_DIVIDEND + 0
 	PHA
@@ -739,9 +717,10 @@ op_div__after_mod:
 	STA DIV_DIVISOR + 1
 	PHA
 
-	; Clear the DIV_RESULT_NEG flag and DIV_RESULT
+	; Clear the DIV_DIVIDEND_NEG flag, the DIV_DIVISOR_NEG flag, and DIV_RESULT
 	LDA #$00
-	STA DIV_RESULT_NEG
+	STA DIV_DIVIDEND_NEG
+	STA DIV_DIVISOR_NEG
 	STA DIV_RESULT + 0
 	STA DIV_RESULT + 1
 
@@ -755,12 +734,13 @@ op_div__after_mod:
 
 	JSR op_neg
 
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	STA DIV_DIVIDEND + 0
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	STA DIV_DIVIDEND + 1
 
-	INC DIV_RESULT_NEG ; Increment because we need to negate the result now for either div or mod
+	LDA #$01
+	STA DIV_DIVIDEND_NEG ; Save fact that dividend was negated
 
 	; Dividend is now negative
 op_div__dividend_negative:
@@ -775,21 +755,13 @@ op_div__dividend_negative:
 
 	JSR op_neg
 
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	STA DIV_DIVISOR + 0
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	STA DIV_DIVISOR + 1
 
-	LDA DIV_MOD
-	BNE op_div__divisor_negative_mod
-
 	LDA #$01
-	EOR DIV_RESULT_NEG ; XOR because we may have already incremented it
-	STA DIV_RESULT_NEG
-
-	; Skip to here without XORing the flag if we're taking the mod
-	; For mod, we only care about the sign of the dividend
-op_div__divisor_negative_mod:
+	STA DIV_DIVISOR_NEG ; Save fact that divisor was negated
 
 	; Divisor is now negative
 op_div__divisor_negative:
@@ -819,9 +791,9 @@ op_div__divisor_shift_left_loop:
 
 	JSR op_shl
 
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	STA DIV_DIVISOR + 0
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	STA DIV_DIVISOR + 1
 
 	INC DIV_DIVISOR_SHIFT_COUNT
@@ -848,9 +820,9 @@ op_div__divide_loop:
 
 	JSR op_shl
 
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	STA DIV_RESULT + 0
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	STA DIV_RESULT + 1
 
 	; Attempt DIVIDEND - DIVISOR
@@ -866,10 +838,10 @@ op_div__divide_loop:
 
 	JSR op_sub
 
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	BMI op_div__divide_loop_sub_good
 	; Check the rest of the bytes, all 0s is also okay
-	ORA CALC_RESULT + 0
+	ORA CALC_RESULT1 + 0
 	BEQ op_div__divide_loop_sub_good
 
 	; Here, the subtraction was too much so let's ignore it and complete this iter
@@ -877,9 +849,9 @@ op_div__divide_loop:
 
 op_div__divide_loop_sub_good:
 	; Successfully subtracted from the dividend, keep that change
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	STA DIV_DIVIDEND + 0
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	STA DIV_DIVIDEND + 1
 
 	; Increment the result
@@ -895,9 +867,9 @@ op_div__divide_loop_sub_good:
 
 	JSR op_add
 
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	STA DIV_RESULT + 0
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	STA DIV_RESULT + 1
 
 op_div__divide_loop_iter_done:
@@ -914,48 +886,69 @@ op_div__divide_loop_iter_done:
 
 	JSR op_shr
 
-	LDA CALC_RESULT + 0
+	LDA CALC_RESULT1 + 0
 	STA DIV_DIVISOR + 0
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	STA DIV_DIVISOR + 1
 
 	JMP op_div__divide_loop
 
 op_div__divide_done:
 
-	; Put div result in calc result first
-	LDA DIV_MOD
-	BNE op_div__store_mod_result
+	; Store the result of the mod
+	LDA DIV_DIVIDEND_NEG
+	BEQ op_div__result2_no_negation
 
-	; If we're performing a div, store the result of the div
-	LDA DIV_RESULT + 0
-	STA CALC_RESULT + 0
-	LDA DIV_RESULT + 1
-	STA CALC_RESULT + 1
-	JMP op_div__done_storing_result
-
-op_div__store_mod_result:
-	; If we're performing a mod, store the remaining dividend as the result
+	; Store the remaining dividend as the result of the mod
+	; Need to negate mod result based on dividend
 	LDA DIV_DIVIDEND + 0
-	STA CALC_RESULT + 0
-	LDA DIV_DIVIDEND + 1
-	STA CALC_RESULT + 1
-
-op_div__done_storing_result:
-
-	LDA DIV_RESULT_NEG
-	BEQ op_div__negation_done
-
-	; Need to negate the result
-	LDA CALC_RESULT + 0
 	STA CALC_ARG1 + 0
-	LDA CALC_RESULT + 1
+	LDA DIV_DIVIDEND + 1
 	STA CALC_ARG1 + 1
 
 	JSR op_neg
-	; New div result in calc result here
 
-op_div__negation_done:
+	LDA CALC_RESULT1 + 0
+	STA CALC_RESULT2 + 0
+	LDA CALC_RESULT1 + 1
+	STA CALC_RESULT2 + 1
+
+	JMP op_div__result2_negation_done
+
+op_div__result2_no_negation:
+
+	; Store the remaining dividend as the result of the mod
+	LDA DIV_DIVIDEND + 0
+	STA CALC_RESULT2 + 0
+	LDA DIV_DIVIDEND + 1
+	STA CALC_RESULT2 + 1
+
+op_div__result2_negation_done:
+
+	; Store the result of the div
+	LDA DIV_DIVISOR_NEG
+	EOR DIV_DIVIDEND_NEG
+	BEQ op_div__result1_no_negation
+
+	; Need to negate div result based on both divisor and dividend
+	LDA DIV_RESULT + 0
+	STA CALC_ARG1 + 0
+	LDA DIV_RESULT + 1
+	STA CALC_ARG1 + 1
+
+	JSR op_neg
+	; New div result in result1 here
+	JMP op_div__result1_negation_done
+
+op_div__result1_no_negation:
+
+	; No need to negate div result
+	LDA DIV_RESULT + 0
+	STA CALC_RESULT1 + 0
+	LDA DIV_RESULT + 1
+	STA CALC_RESULT1 + 1
+
+op_div__result1_negation_done:
 
 	; Clean up
 	PLA
@@ -971,6 +964,7 @@ op_div__negation_done:
 	RTS
 
 ; Signed < operation
+; Does not use CALC_RESULT2
 op_lt_signed:
     ; Start with MSBytes
     LDA CALC_ARG2 + 1
@@ -996,14 +990,15 @@ op_lt_signed__true:
 op_lt_signed__false:
     LDA #$0
 op_lt_signed__done:
-    STA CALC_RESULT + 0
+    STA CALC_RESULT1 + 0
     LDA #$0
-    STA CALC_RESULT + 1
+    STA CALC_RESULT1 + 1
     RTS
 
 
 ; Negation operation
 ; Ignores CALC_ARG2
+; Does not use CALC_RESULT2
 op_neg:
 	; Save CALC_ARG1 and CALC_ARG2 to be restored
 	LDA CALC_ARG1 + 0
@@ -1016,7 +1011,7 @@ op_neg:
 	LDA CALC_ARG2 + 1
 	PHA
 
-	; Bitwise inverse CALC_ARG1 into CALC_RESULT
+	; Bitwise inverse CALC_ARG1 into CALC_ARG1
 	LDA CALC_ARG1 + 0
 	EOR #$FF
 	STA CALC_ARG1 + 0
@@ -1032,6 +1027,7 @@ op_neg:
 	STA CALC_ARG2 + 1
 
 	JSR op_add
+	; Negated value now in CALC_RESULT1
 
 	; Restore CALC_ARG1 and CALC_ARG2
 	PLA
@@ -1048,11 +1044,12 @@ op_neg:
 
 ; ARG1 >> ARG2 (MSByte of ARG2 ignored)
 ; Does not perform sign extension
+; Does not use CALC_RESULT2
 op_shr_no_extend:
 	LDA CALC_ARG1 + 0
-	STA CALC_RESULT + 0
+	STA CALC_RESULT1 + 0
 	LDA CALC_ARG1 + 1
-	STA CALC_RESULT + 1
+	STA CALC_RESULT1 + 1
 
 	LDA CALC_ARG2 + 0
 	TAX
@@ -1061,16 +1058,17 @@ op_shr_no_extend:
 
 ; ARG1 >> ARG2 (MSByte of ARG2 ignored)
 ; Performs sign extension
+; Does not use CALC_RESULT2
 op_shr:
 	LDA CALC_ARG1 + 0
-	STA CALC_RESULT + 0
+	STA CALC_RESULT1 + 0
 	LDA CALC_ARG1 + 1
-	STA CALC_RESULT + 1
+	STA CALC_RESULT1 + 1
 
 	LDA CALC_ARG2 + 0
 	TAX
 
-	LDA CALC_RESULT + 1
+	LDA CALC_RESULT1 + 1
 	BIT bits_table + 7 ; Check top bit of MSByte
 	; If top bit is zero, shift without sign extension
 	BEQ op_shr__loop_guard_zero_extend
@@ -1081,8 +1079,8 @@ op_shr__loop_guard_one_extend:
 	BEQ op_shr__done
 
 	SEC
-	ROR CALC_RESULT + 1
-	ROR CALC_RESULT + 0
+	ROR CALC_RESULT1 + 1
+	ROR CALC_RESULT1 + 0
 	DEX
 
 	JMP op_shr__loop_guard_zero_extend
@@ -1093,8 +1091,8 @@ op_shr__loop_guard_zero_extend:
 	BEQ op_shr__done
 
 	CLC
-	ROR CALC_RESULT + 1
-	ROR CALC_RESULT + 0
+	ROR CALC_RESULT1 + 1
+	ROR CALC_RESULT1 + 0
 	DEX
 
 	JMP op_shr__loop_guard_zero_extend
@@ -1104,11 +1102,12 @@ op_shr__done:
 
 
 ; ARG1 << ARG2 (MSByte of ARG2 ignored)
+; Does not use CALC_RESULT2
 op_shl:
 	LDA CALC_ARG1 + 0
-	STA CALC_RESULT + 0
+	STA CALC_RESULT1 + 0
 	LDA CALC_ARG1 + 1
-	STA CALC_RESULT + 1
+	STA CALC_RESULT1 + 1
 
 	LDA CALC_ARG2 + 0
 	TAX
@@ -1118,14 +1117,33 @@ op_shl__loop_guard:
 	BEQ op_shl__done
 op_shl__loop:
 	CLC
-	ROL CALC_RESULT + 0
-	ROL CALC_RESULT + 1
+	ROL CALC_RESULT1 + 0
+	ROL CALC_RESULT1 + 1
 	DEX
 
 	JMP op_shl__loop_guard
 
 op_shl__done:
 	RTS
+
+
+; 
+; Stack Operations
+;
+
+
+
+
+; 
+; Display Operations
+; 
+
+
+
+
+; 
+; Hardware Interfaces
+; 
 
 ; Read a key
 read_key:
@@ -1137,7 +1155,7 @@ read_key_wait:
 	BNE read_key_wait		; If the second byte isn't ready, wait
 
 	LDX KEYPAD_DATA			; Read the key down bitmask
-	BNE read_key_pressed	; If the bitmask is equal to zero, there's a keypress
+	BNE read_key_pressed	; If the bitmask is not equal to zero, there's a keypress
 	RTS
 read_key_pressed:
 	TYA						; Put key group index << 3 in Y
@@ -1156,9 +1174,6 @@ read_key_pressed_loop:
 	INY
 	JMP read_key_pressed_loop
 read_key_found:
-	LDA symbol_table,y
-	jsr print				; Print the key index
-
 	LDA number_table,y
 	LDY DISPLAY_INDEX
 	jsr segment_print
@@ -1181,18 +1196,6 @@ segment_print:
 	STA DISPLAY_RAM,y
 	PLA
 	RTS
-
-; Prints the character in the A register to the display
-print:
-	PHA
-	STA VIA_REG_B	; Set the data lines to the character we want to show
-	LDA #[LCD_EN_HIGH | LCD_RW_WRITE | LCD_RS_DATA]
-	STA VIA_REG_A	; Turn enable on, set control signals
-	LDA #[LCD_EN_LOW  | LCD_RW_WRITE | LCD_RS_DATA]
-	STA VIA_REG_A	; Turn enable off
-	PLA
-	RTS
-
 
 ; ================== ;
 ; Interrupt handlers ;
