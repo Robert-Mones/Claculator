@@ -52,9 +52,11 @@ DIV_DIVIDEND_NEG	= $1C	; One-byte flag indicating that the dividend was negated
 STACK_SIZE = $1D	; One-byte size of the stack, should be incremented in multiples of 4 and should not be incremented above 0xFC to prevent overflow
 CALC_RESULT2	= $1E	; Two-byte result for calculations that produce two results
 STACK_TEMP = $20	; Four-byte temp variable to copy values into before they're pushed onto the stack
+RENDER_RESULT = $24	; Eight-byte result of rendering a number
+RENDER_NEGATIVE = $2C	; One-byte flag indicating that the number being rendered was negative
 
-STACK_START = $0200	; 252-byte operand stack
-DISPLAY_BUFFER_START = $0300 ; 72-byte buffer of the display RAM, first byte is MSDigit of #8 in stack
+STACK = $0200	; 252-byte operand stack
+DISPLAY_BUFFER = $0300 ; 72-byte buffer of the display RAM, first byte is MSDigit of #8 in stack
 
 ; ========================================
 
@@ -86,12 +88,14 @@ start:
 	LDA #$0
 disp_init_loop:
 	DEY
-	STA DISPLAY_RAM,y
+	STA DISPLAY_BUFFER,y
 	BNE disp_init_loop
 	STY DISPLAY_INDEX
 
+	JSR draw_display
 
-
+	; Math operation unit tests
+/*
 	LDA #$C0
 	STA CALC_ARG1 + 0
 	LDA #$02
@@ -526,13 +530,30 @@ disp_init_loop:
 	TAY
 	LDA CALC_RESULT2 + 1
 	TAX
+	*/
 
 	NOP
 
+	; Render -15122 to the display entry spot
+	LDA #$EE
+	STA CALC_ARG1 + 0
+	LDA #$C4
+	STA CALC_ARG1 + 1
+
+	JSR render_number
+
+	LDY #7
+copy_number_loop:
+	LDA RENDER_RESULT,y
+	STA (DISPLAY_BUFFER + #64),y
+	DEY
+	BPL copy_number_loop
+
+	JSR draw_entry_display
 
 ; Run the main loop
 loop:
-	LDA VIA_REG_B			; Check the VIA pin A2 for the status of the keypad
+	LDA VIA_REG_B			; Check the VIA pin B7 for the status of the keypad
 	AND #$80
 	BNE skip_read_key		; If the interrupt bit is 1, go back to the beginning of loop
 	JSR read_key			; If the interrupt bit is 0, read the keypress
@@ -541,13 +562,12 @@ skip_read_key:
 	LDA RENDER_NEEDED		; Check the RENDER_NEEDED flag
 	BEQ skip_redraw			; If it's 0, skip drawing the display
 	JSR draw_display		; If it's non-zero, draw the display
+
+	LDA #$00
+	STA RENDER_NEEDED
 skip_redraw:
 
 	JMP loop
-
-; Redraw the display
-draw_display:
-	RTS
 
 ; Spec for all operations
 ; Values of CALC_ARG1 and CALC_ARG2 are unmodified and must be restored by the callee
@@ -1138,8 +1158,122 @@ op_shl__done:
 ; Display Operations
 ; 
 
+draw_display:
+	LDY #71
+draw_display__loop:
+	LDA DISPLAY_BUFFER,y
+	STA DISPLAY_RAM,y
+	DEY
+	BPL draw_display__loop
 
+	RTS
 
+draw_entry_display:
+	LDY #7
+draw_entry_display__loop:
+	LDA (DISPLAY_BUFFER + #64),y
+	STA (DISPLAY_RAM + #64),y
+	DEY
+	BPL draw_entry_display__loop
+
+	RTS
+
+render_number:
+	; Save args to restore at the end
+	LDA CALC_ARG1 + 0
+	STA MUL_FAST_ARG1 + 0
+	PHA
+	LDA CALC_ARG1 + 1
+	STA MUL_FAST_ARG1 + 1
+	PHA
+
+	LDA CALC_ARG2 + 0
+	STA MUL_FAST_ARG2 + 0
+	PHA
+	LDA CALC_ARG2 + 1
+	STA MUL_FAST_ARG2 + 1
+	PHA
+	
+	LDA #$00 ; Clear RENDER_RESULT and RENDER_NEGATIVE
+	STA RENDER_RESULT + 0
+	STA RENDER_RESULT + 1
+	STA RENDER_RESULT + 2
+	STA RENDER_RESULT + 3
+	STA RENDER_RESULT + 4
+	STA RENDER_RESULT + 5
+	STA RENDER_RESULT + 6
+	STA RENDER_RESULT + 7
+	STA RENDER_NEGATIVE
+
+	LDA CALC_ARG1 + 1
+	BPL render_number__arg1_positive
+	
+	JSR op_neg
+
+	LDA CALC_RESULT1 + 0
+	STA CALC_ARG1 + 0
+	LDA CALC_RESULT1 + 1
+	STA CALC_ARG1 + 1
+
+	LDA #$01
+	STA RENDER_NEGATIVE
+
+render_number__arg1_positive:
+
+	LDY #7	; Digit counter starting from LSDigit
+
+	; We're going to divide by 10 a lot
+	LDA #10
+	STA CALC_ARG2 + 0
+	LDA #$00
+	STA CALC_ARG2 + 1
+
+render_number__loop:
+	; Perform division to get LSDigit
+	JSR op_divmod
+
+	; Div result goes into next CALC_ARG1
+	LDA CALC_RESULT1 + 0
+	STA CALC_ARG1 + 0
+	LDA CALC_RESULT1 + 1
+	STA CALC_ARG1 + 1
+
+	; Mod result is the current digit, ignore all but lowest byte
+	LDA CALC_RESULT2 + 0
+	
+	; Grab the digit from the segment table
+	TAX
+	LDA segment_table,x
+	STA RENDER_RESULT,y
+
+	; Loop guard
+	DEY
+	LDA CALC_ARG1 + 0
+	BNE render_number__loop
+	LDA CALC_ARG1 + 1
+	BNE render_number__loop
+
+	; Optionally render a minus sign
+	LDA RENDER_NEGATIVE
+	BEQ render_number__done
+
+	LDA #SEGMENT_MINUS
+	STA RENDER_RESULT,y
+
+render_number__done:
+
+	; Restore args
+	PLA
+	STA CALC_ARG2 + 1
+	PLA
+	STA CALC_ARG2 + 0
+
+	PLA
+	STA CALC_ARG1 + 1
+	PLA
+	STA CALC_ARG1 + 0
+
+	RTS
 
 ; 
 ; Hardware Interfaces
@@ -1149,15 +1283,15 @@ op_shl__done:
 read_key:
 	LDY KEYPAD_DATA			; Read the key group index
 
-read_key_wait:
-	LDA VIA_REG_A
-	AND #$04
-	BNE read_key_wait		; If the second byte isn't ready, wait
+read_key__wait:
+	LDA VIA_REG_B
+	AND #$80
+	BNE read_key__wait		; If the second byte isn't ready, wait
 
 	LDX KEYPAD_DATA			; Read the key down bitmask
-	BNE read_key_pressed	; If the bitmask is not equal to zero, there's a keypress
+	BNE read_key__pressed	; If the bitmask is not equal to zero, there's a keypress
 	RTS
-read_key_pressed:
+read_key__pressed:
 	TYA						; Put key group index << 3 in Y
 	ASL
 	ASL
@@ -1165,18 +1299,18 @@ read_key_pressed:
 	TAY
 
 	TXA						; Put the orig bitmask in A
-read_key_pressed_loop:
+read_key__pressed_loop:
 	AND #$1					; Test the lsb
-	BNE read_key_found
+	BNE read_key__found
 	TXA						; Put the most recent bitmask back in A
 	LSR						; Right-shift it by 1 and put it back in X
 	TAX
 	INY
-	JMP read_key_pressed_loop
-read_key_found:
+	JMP read_key__pressed_loop
+read_key__found:
 	LDA number_table,y
 	LDY DISPLAY_INDEX
-	jsr segment_print
+	JSR segment_print
 	INC DISPLAY_INDEX
 	LDA DISPLAY_INDEX
 	CMP #72
@@ -1193,7 +1327,7 @@ segment_print:
 	PHA
 	TAX
 	LDA segment_table,x
-	STA DISPLAY_RAM,y
+	STA DISPLAY_BUFFER,y
 	PLA
 	RTS
 
@@ -1211,10 +1345,6 @@ irq_handler:
 	LDA VIA_INT_FLAG
 	AND #[1 << 6]
 	BNE timer_irq
-
-	LDA VIA_REG_A
-	AND #$04
-	BEQ keypad_irq
 
 	PLA
 	RTI
@@ -1242,10 +1372,6 @@ timer_irq:
 	PLA
 	RTI*/
 
-keypad_irq:
-	PLA
-	RTI
-
 
 ; ======================== ;
 ; Constants and other data ;
@@ -1265,7 +1391,10 @@ symbol_table:
 number_table:
 	DC.B 9,0,6,0,3,0,0,0,7,8,4,5,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 segment_table:
-	DC.B %00111111, %00000110, %01011011, %01001111, %01100110, %01101101, %01111101, %00000111, %01111111, %01101111
+	DC.B %00111111, %00000110, %01011011, %01001111, %01100110, %01101101, %01111101, %00000111, %01111111, %01101111, %00001001
+
+; Remember to use these in immediate mode! LDA #SEGMENT_MINUS, not LDA SEGMENT_MINUS
+SEGMENT_MINUS = %01000000
 
 	ORG $FFFA
 vector_table:
