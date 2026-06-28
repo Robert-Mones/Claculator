@@ -24,15 +24,15 @@ VIA_PER_CTRL	= $6C0C
 VIA_INT_FLAG	= $6C0D
 VIA_INT_ENBL	= $6C0E
 
-DISPLAY_INDEX	= $00	; Index into the display buffer for looping
-STACK_POINTER   = $01	; One-byte pointer to the operand stack
+DISPLAY_INDEX	= $00	; One-byte index into the display buffer for looping
+ENTRY_DRAW_NEEDED = $01 ; One-byte flag indicating a redraw of the entry portion of the display is needed
 
 CALC_ARG1	= $02	; Two-byte arg for calculations
 CALC_ARG2	= $04	; Two-byte arg for calculations
 CALC_RESULT1	= $06	; Two-byte result for calculations
 
 INPUT_BUFFER	= $08	; Two-byte buffer for entering an operand
-RENDER_NEEDED	= $0A	; One-byte flag indicating a redraw of the display is needed
+FULL_DRAW_NEEDED	= $0A	; One-byte flag indicating a redraw of the whole display is needed
 
 MUL_MINOR	= $0B	; Two-byte buffer for the smaller of the two operands for mul
 
@@ -54,6 +54,8 @@ CALC_RESULT2	= $1E	; Two-byte result for calculations that produce two results
 STACK_TEMP = $20	; Four-byte temp variable to copy values into before they're pushed onto the stack
 RENDER_RESULT = $24	; Eight-byte result of rendering a number
 RENDER_NEGATIVE = $2C	; One-byte flag indicating that the number being rendered was negative
+JUMP_TABLE_TEMP = $2D	; Two-byte buffer to write an address into to do indirect addressing jumps
+ENTRY_BUFFER = $2F ; Two-byte buffer for incoming numbers to be entered
 
 STACK = $0200	; 252-byte operand stack
 DISPLAY_BUFFER = $0300 ; 72-byte buffer of the display RAM, first byte is MSDigit of #8 in stack
@@ -64,15 +66,17 @@ DISPLAY_BUFFER = $0300 ; 72-byte buffer of the display RAM, first byte is MSDigi
 	ORG $8000
 
 start:
-	LDX #$FF				; Initialize the stack pointer
+	; Initialize the stack pointer
+	LDX #$FF
 	TXS
 
+	; Initialize the VIA
 	LDA #$FF
 	STA VIA_DDR_A
 	LDA #$7F				; Set all besides B7 on the VIA to be outputs
 	STA VIA_DDR_B
 
-	; Now initialize the ACIA
+	; Initialize the ACIA
 	/*
 	STA ACIA_STATUS			; Software reset
 
@@ -82,8 +86,13 @@ start:
 	LDA #%00001001			; IRQB enabled, data terminal ready
 	STA ACIA_CMD
 	*/
+
+	; Initialize some variables
+	LDA #$00
+	STA ENTRY_BUFFER + 0
+	STA ENTRY_BUFFER + 1
 	
-	; Now initialize the display
+	; Initialize the display
 	LDY #72
 	LDA #$0
 disp_init_loop:
@@ -93,446 +102,6 @@ disp_init_loop:
 	STY DISPLAY_INDEX
 
 	JSR draw_display
-
-	; Math operation unit tests
-/*
-	LDA #$C0
-	STA CALC_ARG1 + 0
-	LDA #$02
-	STA CALC_ARG1 + 1
-
-	LDA #$00
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
-
-	JSR op_shl
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	LDA #$01
-	STA CALC_ARG2 + 0
-
-	JSR op_shl
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	LDA #$02
-	STA CALC_ARG2 + 0
-
-	JSR op_shl
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	LDA #$41
-	STA CALC_ARG1 + 0
-	LDA #$01
-	STA CALC_ARG1 + 1
-
-	LDA #$C0
-	STA CALC_ARG2 + 0
-	LDA #$02
-	STA CALC_ARG2 + 1
-
-	JSR op_add
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	JSR op_sub
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	JSR op_mul_fast
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	LDA #$FF
-	STA CALC_ARG1 + 0
-	LDA #$FF
-	STA CALC_ARG1 + 1
-
-	LDA #$C0
-	STA CALC_ARG2 + 0
-	LDA #$02
-	STA CALC_ARG2 + 1
-
-	JSR op_mul_fast
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; -7 / -2 (= 3)
-	LDA #$F9
-	STA CALC_ARG1 + 0
-	LDA #$FF
-	STA CALC_ARG1 + 1
-
-	LDA #$FE
-	STA CALC_ARG2 + 0
-	LDA #$FF
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; 15122 / 213 (= 70)
-	LDA #$12
-	STA CALC_ARG1 + 0
-	LDA #$3B
-	STA CALC_ARG1 + 1
-
-	LDA #$D5
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; 15123 / 213 (= 71)
-	LDA #$13
-	STA CALC_ARG1 + 0
-	LDA #$3B
-	STA CALC_ARG1 + 1
-
-	LDA #$D5
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; -15122 / 213 (= -70)
-	LDA #$EE
-	STA CALC_ARG1 + 0
-	LDA #$C4
-	STA CALC_ARG1 + 1
-
-	LDA #$D5
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; -15123 / 213 (= -71)
-	LDA #$ED
-	STA CALC_ARG1 + 0
-	LDA #$C4
-	STA CALC_ARG1 + 1
-
-	LDA #$D5
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; 15122 / -213 (= -70)
-	LDA #$12
-	STA CALC_ARG1 + 0
-	LDA #$3B
-	STA CALC_ARG1 + 1
-
-	LDA #$2B
-	STA CALC_ARG2 + 0
-	LDA #$FF
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; 15123 / -213 (= -71)
-	LDA #$13
-	STA CALC_ARG1 + 0
-	LDA #$3B
-	STA CALC_ARG1 + 1
-
-	LDA #$2B
-	STA CALC_ARG2 + 0
-	LDA #$FF
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; -15122 / -213 (= 70)
-	LDA #$EE
-	STA CALC_ARG1 + 0
-	LDA #$C4
-	STA CALC_ARG1 + 1
-
-	LDA #$2B
-	STA CALC_ARG2 + 0
-	LDA #$FF
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; -15123 / -213 (= 71)
-	LDA #$ED
-	STA CALC_ARG1 + 0
-	LDA #$C4
-	STA CALC_ARG1 + 1
-
-	LDA #$2B
-	STA CALC_ARG2 + 0
-	LDA #$FF
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; 24241 / 971 (= 24)
-	LDA #$B1
-	STA CALC_ARG1 + 0
-	LDA #$5E
-	STA CALC_ARG1 + 1
-
-	LDA #$CB
-	STA CALC_ARG2 + 0
-	LDA #$03
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; -24241 / 971 (= -24)
-	LDA #$4F
-	STA CALC_ARG1 + 0
-	LDA #$A1
-	STA CALC_ARG1 + 1
-
-	LDA #$CB
-	STA CALC_ARG2 + 0
-	LDA #$03
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; 24241 / -971 (= -24)
-	LDA #$B1
-	STA CALC_ARG1 + 0
-	LDA #$5E
-	STA CALC_ARG1 + 1
-
-	LDA #$35
-	STA CALC_ARG2 + 0
-	LDA #$FC
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; -24241 / -971 (= 24)
-	LDA #$4F
-	STA CALC_ARG1 + 0
-	LDA #$A1
-	STA CALC_ARG1 + 1
-
-	LDA #$35
-	STA CALC_ARG2 + 0
-	LDA #$FC
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT1 + 0
-	TAY
-	LDA CALC_RESULT1 + 1
-	TAX
-
-	; 15 % 3 (= 0)
-	LDA #$0F
-	STA CALC_ARG1 + 0
-	LDA #$00
-	STA CALC_ARG1 + 1
-
-	LDA #$03
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT2 + 0
-	TAY
-	LDA CALC_RESULT2 + 1
-	TAX
-
-	; 16 % 3 (= 1)
-	LDA #$10
-	STA CALC_ARG1 + 0
-	LDA #$00
-	STA CALC_ARG1 + 1
-
-	LDA #$03
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT2 + 0
-	TAY
-	LDA CALC_RESULT2 + 1
-	TAX
-
-	; 17 % 3 (= 2)
-	LDA #$11
-	STA CALC_ARG1 + 0
-	LDA #$00
-	STA CALC_ARG1 + 1
-
-	LDA #$03
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT2 + 0
-	TAY
-	LDA CALC_RESULT2 + 1
-	TAX
-
-	; -17 % 3 (= -2)
-	LDA #$EF
-	STA CALC_ARG1 + 0
-	LDA #$FF
-	STA CALC_ARG1 + 1
-
-	LDA #$03
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT2 + 0
-	TAY
-	LDA CALC_RESULT2 + 1
-	TAX
-
-	; 17 % -3 (= 2)
-	LDA #$11
-	STA CALC_ARG1 + 0
-	LDA #$00
-	STA CALC_ARG1 + 1
-
-	LDA #$FD
-	STA CALC_ARG2 + 0
-	LDA #$FF
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT2 + 0
-	TAY
-	LDA CALC_RESULT2 + 1
-	TAX
-
-	; -17 % -3 (= -2)
-	LDA #$EF
-	STA CALC_ARG1 + 0
-	LDA #$FF
-	STA CALC_ARG1 + 1
-
-	LDA #$03
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT2 + 0
-	TAY
-	LDA CALC_RESULT2 + 1
-	TAX
-
-	; 15165 % 271 (= 260)
-	LDA #$3D
-	STA CALC_ARG1 + 0
-	LDA #$3B
-	STA CALC_ARG1 + 1
-
-	LDA #$0F
-	STA CALC_ARG2 + 0
-	LDA #$01
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT2 + 0
-	TAY
-	LDA CALC_RESULT2 + 1
-	TAX
-
-	; -15165 % 271 (= -260)
-	LDA #$C3
-	STA CALC_ARG1 + 0
-	LDA #$C4
-	STA CALC_ARG1 + 1
-
-	LDA #$0F
-	STA CALC_ARG2 + 0
-	LDA #$01
-	STA CALC_ARG2 + 1
-
-	JSR op_divmod
-	LDA CALC_RESULT2 + 0
-	TAY
-	LDA CALC_RESULT2 + 1
-	TAX
-	*/
-
-	NOP
 
 	; Render -15122 to the display entry spot
 	LDA #$EE
@@ -545,11 +114,11 @@ disp_init_loop:
 	LDY #7
 copy_number_loop:
 	LDA RENDER_RESULT,y
-	STA (DISPLAY_BUFFER + #64),y
+	STA [DISPLAY_BUFFER + 56],y
 	DEY
 	BPL copy_number_loop
 
-	JSR draw_entry_display
+	JSR draw_display
 
 ; Run the main loop
 loop:
@@ -559,13 +128,26 @@ loop:
 	JSR read_key			; If the interrupt bit is 0, read the keypress
 skip_read_key:
 
-	LDA RENDER_NEEDED		; Check the RENDER_NEEDED flag
-	BEQ skip_redraw			; If it's 0, skip drawing the display
+	LDA FULL_DRAW_NEEDED	; Check the FULL_DRAW_NEEDED flag
+	BEQ full_redraw_not_needed	; If it's 0, skip drawing the display
 	JSR draw_display		; If it's non-zero, draw the display
 
 	LDA #$00
-	STA RENDER_NEEDED
-skip_redraw:
+	STA FULL_DRAW_NEEDED
+	STA ENTRY_DRAW_NEEDED
+	JMP redraw_done
+full_redraw_not_needed:
+
+	LDA ENTRY_DRAW_NEEDED
+	BEQ redraw_done
+	JSR draw_entry_display
+	
+	LDA #$00
+	STA ENTRY_DRAW_NEEDED
+
+	LDA #$00
+
+redraw_done:
 
 	JMP loop
 
@@ -611,6 +193,7 @@ op_sub:
 ; ARG2 is saved on stack, restored at end
 ; On every loop, ARG1 is shifted right, if LSB set, ARG2 is added to MUL_FAST_RESULT
 ; On every loop, ARG2 is shifted left
+op_mul:
 op_mul_fast:
 	LDA CALC_ARG1 + 0
 	STA MUL_FAST_ARG1 + 0
@@ -1153,6 +736,329 @@ op_shl__done:
 
 
 
+; 
+; Key Press
+;
+
+; The incoming key code is stored in the A register
+; X and Y are saved by the caller, A does not need to be saved
+process_key:
+	; First, add 29 to the keycode to make them all 0-whatever ([-29, 9] -> [0 - 38])
+	; This range must be at most [0,127] to keep the jump table offset in 8 bits
+	CLC
+	ADC #29
+	; Then double it to get a word-width offset
+	ASL
+	; Then put this value in Y to do the indexing
+	TAY
+	
+	; Load the address from the jump table into the temp variable
+	LDA process_key__jump_table,y
+	STA JUMP_TABLE_TEMP
+	LDA [process_key__jump_table + 1],y
+	STA JUMP_TABLE_TEMP + 1
+	
+	; Jump to branch in switch case
+	JMP (JUMP_TABLE_TEMP)
+
+process_key__key__enter:
+	JMP process_key__done
+
+process_key__key__pos_neg:
+	LDA ENTRY_BUFFER + 0
+	STA CALC_ARG1 + 0
+	LDA ENTRY_BUFFER + 1
+	STA CALC_ARG2 + 1
+
+	JSR op_neg
+
+	LDA CALC_RESULT1 + 0
+	STA CALC_ARG1 + 0
+	STA ENTRY_BUFFER + 0
+	LDA CALC_RESULT1 + 1
+	STA CALC_ARG1 + 1
+	STA ENTRY_BUFFER + 1
+
+	JSR render_number
+
+	LDY #7
+process_key__key__pos_neg_copy_loop:
+	LDA RENDER_RESULT,y
+	STA [DISPLAY_BUFFER + 64],y
+	DEY
+	BPL process_key__key__pos_neg_copy_loop
+
+	LDA #$01
+	STA ENTRY_DRAW_NEEDED
+
+	JMP process_key__done
+
+process_key__key__backspace:
+	LDA ENTRY_BUFFER + 0
+	STA CALC_ARG1 + 0
+	LDA ENTRY_BUFFER + 1
+	STA CALC_ARG2 + 1
+
+	LDA #10
+	STA CALC_ARG2 + 0
+	LDA #$00
+	STA CALC_ARG2 + 1
+
+	JSR op_divmod
+
+	LDA CALC_RESULT1 + 0
+	STA CALC_ARG1 + 0
+	STA ENTRY_BUFFER + 0
+	LDA CALC_RESULT1 + 1
+	STA CALC_ARG1 + 1
+	STA ENTRY_BUFFER + 1
+
+	JSR render_number
+
+	LDY #7
+process_key__key__backspace_copy_loop:
+	LDA RENDER_RESULT,y
+	STA [DISPLAY_BUFFER + 64],y
+	DEY
+	BPL process_key__key__backspace_copy_loop
+
+	LDA #$01
+	STA ENTRY_DRAW_NEEDED
+
+	JMP process_key__done
+
+process_key__key__decimal:
+	JMP process_key__done
+
+process_key__key__sci_not_e:
+	JMP process_key__done
+
+process_key__key__div:
+	JMP process_key__done
+
+process_key__key__mul:
+	JMP process_key__done
+
+process_key__key__sub:
+	JMP process_key__done
+
+process_key__key__add:
+	JMP process_key__done
+
+process_key__key__mod:
+	JMP process_key__done
+
+process_key__key__reciprocal:
+	JMP process_key__done
+
+process_key__key__square_root:
+	JMP process_key__done
+
+process_key__key__square:
+	JMP process_key__done
+
+process_key__key__floor:
+	JMP process_key__done
+
+process_key__key__ceiling:
+	JMP process_key__done
+
+process_key__key__nth_root:
+	JMP process_key__done
+
+process_key__key__exponent:
+	JMP process_key__done
+
+process_key__key__drop:
+	JMP process_key__done
+
+process_key__key__swap:
+	JMP process_key__done
+
+process_key__key__rotate:
+	JMP process_key__done
+
+process_key__key__pick:
+	JMP process_key__done
+
+process_key__key__skip:
+	JMP process_key__done
+
+process_key__key__if:
+	JMP process_key__done
+
+process_key__key__noop:
+	JMP process_key__done
+
+process_key__key__less_than:
+	JMP process_key__done
+
+process_key__key__P:
+	JMP process_key__done
+
+process_key__key__semicolon:
+	JMP process_key__done
+
+process_key__key__colon:
+	JMP process_key__done
+
+process_key__key__clear:
+	JMP process_key__done
+
+process_key__key__digit_zero:
+	LDA #0
+	JMP process_key__digit_common
+
+process_key__key__digit_one:
+	LDA #1
+	JMP process_key__digit_common
+
+process_key__key__digit_two:
+	LDA #2
+	JMP process_key__digit_common
+
+process_key__key__digit_three:
+	LDA #3
+	JMP process_key__digit_common
+
+process_key__key__digit_four:
+	LDA #4
+	JMP process_key__digit_common
+
+process_key__key__digit_five:
+	LDA #5
+	JMP process_key__digit_common
+
+process_key__key__digit_six:
+	LDA #6
+	JMP process_key__digit_common
+
+process_key__key__digit_seven:
+	LDA #7
+	JMP process_key__digit_common
+
+process_key__key__digit_eight:
+	LDA #8
+	JMP process_key__digit_common
+
+process_key__key__digit_nine:
+	LDA #9
+	JMP process_key__digit_common
+
+process_key__digit_common:
+	PHA
+
+	LDA ENTRY_BUFFER + 0
+	STA CALC_ARG1 + 0
+	LDA ENTRY_BUFFER + 1
+	STA CALC_ARG1 + 1
+
+	LDA #10
+	STA CALC_ARG2 + 0
+	LDA #$00
+	STA CALC_ARG2 + 1
+
+	JSR op_mul
+
+	LDA CALC_RESULT1 + 0
+	STA CALC_ARG1 + 0
+	LDA CALC_RESULT1 + 1
+	STA CALC_ARG1 + 1
+
+	PLA
+	STA CALC_ARG2 + 0
+
+	JSR op_add
+
+	LDA CALC_RESULT1 + 0
+	STA CALC_ARG1 + 0
+	STA ENTRY_BUFFER + 0
+	LDA CALC_RESULT1 + 1
+	STA CALC_ARG1 + 1
+	STA ENTRY_BUFFER + 1
+
+	JSR render_number
+
+	LDY #7
+process_key__digit_common_copy_loop:
+	LDA RENDER_RESULT,y
+	STA [DISPLAY_BUFFER + 64],y
+	DEY
+	BPL process_key__digit_common_copy_loop
+
+	LDA #$01
+	STA ENTRY_DRAW_NEEDED
+
+	JMP process_key__done
+
+process_key__done:
+	RTS ; Real RTS
+
+read_key__found:
+	LDY DISPLAY_INDEX
+	JSR segment_print
+	INC DISPLAY_INDEX
+	LDA DISPLAY_INDEX
+	CMP #72
+	BNE dont_rst_disp_index
+	LDA #0
+	STA DISPLAY_INDEX
+dont_rst_disp_index:
+	LDA #$01
+	STA FULL_DRAW_NEEDED
+	RTS
+
+; Prints the number in the A register to the Y-th seven-segment digit
+segment_print:
+	PHA
+	TAX
+	LDA segment_table,x
+	STA DISPLAY_BUFFER,y
+	PLA
+	RTS
+
+; Keep these sorted low to high
+; All have -1 for now because using RTS instead of JMP until c02 is implemented
+process_key__jump_table:
+	DC.W process_key__key__enter
+	DC.W process_key__key__pos_neg
+	DC.W process_key__key__backspace
+	DC.W process_key__key__decimal
+	DC.W process_key__key__sci_not_e
+	DC.W process_key__key__div
+	DC.W process_key__key__mul
+	DC.W process_key__key__sub
+	DC.W process_key__key__add
+	DC.W process_key__key__mod
+	DC.W process_key__key__reciprocal
+	DC.W process_key__key__square_root
+	DC.W process_key__key__square
+	DC.W process_key__key__floor
+	DC.W process_key__key__ceiling
+	DC.W process_key__key__nth_root
+	DC.W process_key__key__exponent
+	DC.W process_key__key__drop
+	DC.W process_key__key__swap
+	DC.W process_key__key__rotate
+	DC.W process_key__key__pick
+	DC.W process_key__key__skip
+	DC.W process_key__key__if
+	DC.W process_key__key__noop
+	DC.W process_key__key__less_than
+	DC.W process_key__key__P
+	DC.W process_key__key__semicolon
+	DC.W process_key__key__colon
+	DC.W process_key__key__clear
+	DC.W process_key__key__digit_zero
+	DC.W process_key__key__digit_one
+	DC.W process_key__key__digit_two
+	DC.W process_key__key__digit_three
+	DC.W process_key__key__digit_four
+	DC.W process_key__key__digit_five
+	DC.W process_key__key__digit_six
+	DC.W process_key__key__digit_seven
+	DC.W process_key__key__digit_eight
+	DC.W process_key__key__digit_nine
 
 ; 
 ; Display Operations
@@ -1171,8 +1077,8 @@ draw_display__loop:
 draw_entry_display:
 	LDY #7
 draw_entry_display__loop:
-	LDA (DISPLAY_BUFFER + #64),y
-	STA (DISPLAY_RAM + #64),y
+	LDA [DISPLAY_BUFFER + 64],y
+	STA [DISPLAY_RAM + 64],y
 	DEY
 	BPL draw_entry_display__loop
 
@@ -1301,34 +1207,33 @@ read_key__pressed:
 	TXA						; Put the orig bitmask in A
 read_key__pressed_loop:
 	AND #$1					; Test the lsb
-	BNE read_key__found
+	BEQ read_key__key_processing_done ; Skip if there's no keypress
+
+	; Save X and Y registers
+	TXA
+	PHA
+	TYA
+	PHA
+
+	LDA number_table,y
+
+	JSR process_key
+	
+	; Restore X and Y registers
+	PLA
+	TAY
+	PLA
+	TAX
+
+read_key__key_processing_done:
 	TXA						; Put the most recent bitmask back in A
 	LSR						; Right-shift it by 1 and put it back in X
 	TAX
 	INY
-	JMP read_key__pressed_loop
-read_key__found:
-	LDA number_table,y
-	LDY DISPLAY_INDEX
-	JSR segment_print
-	INC DISPLAY_INDEX
-	LDA DISPLAY_INDEX
-	CMP #72
-	BNE dont_rst_disp_index
-	LDA #0
-	STA DISPLAY_INDEX
-dont_rst_disp_index:
-	LDA #$01
-	STA RENDER_NEEDED
-	RTS
 
-; Prints the number in the A register to the Y-th seven-segment digit
-segment_print:
-	PHA
-	TAX
-	LDA segment_table,x
-	STA DISPLAY_BUFFER,y
-	PLA
+	TXA
+	BNE read_key__pressed_loop ; If there's still keys in the bitmask, keep going
+
 	RTS
 
 ; ================== ;
@@ -1388,8 +1293,41 @@ bits_table:
 	DC.B %10000000
 symbol_table:
 	DC.B "9e6_3E.E784512<0<+^-N*%/RTRRSCDFCP:N;IPS"
+
+; This is kind of contrived but I decided to keep digits their own values and make all the ops negative so I could easily check for it
+; This number mapping was chosen somewhat arbitrarily
+	; Clear -1
+	; Colon -2
+	; Semicolon -3
+	; P -4
+	; Less Than -5
+	; Noop -6
+	; If -7
+	; Skip -8
+	; Pick -9
+	; Rotate -10
+	; Swap -11
+	; Drop -12
+	; Exp -13
+	; Nth Root -14
+	; Ceiling -15
+	; Floor -16
+	; Square -17
+	; Square root -18
+	; Recip -19
+	; Mod -20
+	; Add -21
+	; Sub -22
+	; Mul -23
+	; Div -24
+	; Sci Not Exp -25
+	; Decimal -26
+	; Backspace -27
+	; Pos/Neg -28
+	; Enter -29
 number_table:
-	DC.B 9,0,6,0,3,0,0,0,7,8,4,5,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	DC.B 9,-27,6,-28,3,-29,-26,-29,7,8,4,5,1,2,-25,0,-17,-21,-18,-22,-19,-23,-20,-24,-9,-13,-10,-14,-11,-15,-12,-16,0,0,0,0,0,0,0,0
+
 segment_table:
 	DC.B %00111111, %00000110, %01011011, %01001111, %01100110, %01101101, %01111101, %00000111, %01111111, %01101111, %00001001
 
