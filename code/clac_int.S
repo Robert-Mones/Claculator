@@ -56,6 +56,7 @@ RENDER_RESULT = $24	; Eight-byte result of rendering a number
 RENDER_NEGATIVE = $2C	; One-byte flag indicating that the number being rendered was negative
 JUMP_TABLE_TEMP = $2D	; Two-byte buffer to write an address into to do indirect addressing jumps
 ENTRY_BUFFER = $2F ; Two-byte buffer for incoming numbers to be entered
+RENDER_RESULT_BCD = $31	; Three-byte buffer (five half-bytes) to compute BCD digits while performing a render
 
 STACK = $0200	; 252-byte operand stack
 DISPLAY_BUFFER = $0300 ; 72-byte buffer of the display RAM, first byte is MSDigit of #8 in stack
@@ -103,7 +104,22 @@ disp_init_loop:
 
 	JSR draw_display
 
-	; Render -15122 to the display entry spot
+	; Render 15122 to the second spot on the stack
+	LDA #$12
+	STA CALC_ARG1 + 0
+	LDA #$3B
+	STA CALC_ARG1 + 1
+
+	JSR render_number
+
+	LDY #7
+copy_number_loop_1:
+	LDA RENDER_RESULT,y
+	STA [DISPLAY_BUFFER + 48],y
+	DEY
+	BPL copy_number_loop_1
+
+	; Render -15122 to the top of the stack
 	LDA #$EE
 	STA CALC_ARG1 + 0
 	LDA #$C4
@@ -112,11 +128,11 @@ disp_init_loop:
 	JSR render_number
 
 	LDY #7
-copy_number_loop:
+copy_number_loop_2:
 	LDA RENDER_RESULT,y
 	STA [DISPLAY_BUFFER + 56],y
 	DEY
-	BPL copy_number_loop
+	BPL copy_number_loop_2
 
 	JSR draw_display
 
@@ -952,6 +968,7 @@ process_key__digit_common:
 	STA CALC_ARG1 + 0
 	LDA ENTRY_BUFFER + 1
 	STA CALC_ARG1 + 1
+	PHA
 
 	LDA #10
 	STA CALC_ARG2 + 0
@@ -966,9 +983,22 @@ process_key__digit_common:
 	STA CALC_ARG1 + 1
 
 	PLA
+	BMI process_key__digit_common_negative
+
+	PLA
 	STA CALC_ARG2 + 0
 
 	JSR op_add
+
+	JMP process_key__digit_common_add_sub_done
+
+process_key__digit_common_negative:
+	PLA
+	STA CALC_ARG2 + 0
+
+	JSR op_sub
+
+process_key__digit_common_add_sub_done:
 
 	LDA CALC_RESULT1 + 0
 	STA CALC_ARG1 + 0
@@ -1087,20 +1117,16 @@ draw_entry_display__loop:
 render_number:
 	; Save args to restore at the end
 	LDA CALC_ARG1 + 0
-	STA MUL_FAST_ARG1 + 0
 	PHA
 	LDA CALC_ARG1 + 1
-	STA MUL_FAST_ARG1 + 1
 	PHA
 
 	LDA CALC_ARG2 + 0
-	STA MUL_FAST_ARG2 + 0
 	PHA
 	LDA CALC_ARG2 + 1
-	STA MUL_FAST_ARG2 + 1
 	PHA
 	
-	LDA #$00 ; Clear RENDER_RESULT and RENDER_NEGATIVE
+	LDA #$00 ; Clear RENDER_RESULT, RENDER_RESULT_BCD, and RENDER_NEGATIVE
 	STA RENDER_RESULT + 0
 	STA RENDER_RESULT + 1
 	STA RENDER_RESULT + 2
@@ -1109,6 +1135,9 @@ render_number:
 	STA RENDER_RESULT + 5
 	STA RENDER_RESULT + 6
 	STA RENDER_RESULT + 7
+	STA RENDER_RESULT_BCD + 0
+	STA RENDER_RESULT_BCD + 1
+	STA RENDER_RESULT_BCD + 2
 	STA RENDER_NEGATIVE
 
 	LDA CALC_ARG1 + 1
