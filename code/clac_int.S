@@ -56,7 +56,8 @@ RENDER_RESULT = $24	; Eight-byte result of rendering a number
 RENDER_NEGATIVE = $2C	; One-byte flag indicating that the number being rendered was negative
 JUMP_TABLE_TEMP = $2D	; Two-byte buffer to write an address into to do indirect addressing jumps
 ENTRY_BUFFER = $2F ; Two-byte buffer for incoming numbers to be entered
-RENDER_RESULT_BCD = $31	; Three-byte buffer (five half-bytes) to compute BCD digits while performing a render
+RENDER_BCD_RESULT = $31	; Three-byte buffer (five half-bytes) to compute BCD digits while performing a render
+RENDER_BCD_RHS = $34	; Two-byte buffer for RHS of BCD algo
 
 STACK = $0200	; 252-byte operand stack
 DISPLAY_BUFFER = $0300 ; 72-byte buffer of the display RAM, first byte is MSDigit of #8 in stack
@@ -296,9 +297,13 @@ op_mul_fast__shift:
 	STA MUL_FAST_ARG2 + 1
 
 	DEC MUL_FAST_LOOP_COUNT
-	BNE op_mul_fast__loop ; If MUL_FAST_LOOP_COUNT != 0 we're not done
+	BEQ op_mul_fast__done ; If MUL_FAST_LOOP_COUNT == 0, we're done
 
-	JMP op_mul_fast__done
+	LDA MUL_FAST_ARG1 + 0
+	ORA MUL_FAST_ARG1 + 1
+	BEQ op_mul_fast__done ; If MUL_FAST_ARG != 0, we're not done yet
+
+	JMP op_mul_fast__loop
 
 op_mul_fast__done:
 	PLA
@@ -1117,16 +1122,13 @@ draw_entry_display__loop:
 render_number:
 	; Save args to restore at the end
 	LDA CALC_ARG1 + 0
+	STA RENDER_BCD_RHS + 0
 	PHA
 	LDA CALC_ARG1 + 1
-	PHA
-
-	LDA CALC_ARG2 + 0
-	PHA
-	LDA CALC_ARG2 + 1
+	STA RENDER_BCD_RHS + 1
 	PHA
 	
-	LDA #$00 ; Clear RENDER_RESULT, RENDER_RESULT_BCD, and RENDER_NEGATIVE
+	LDA #$00 ; Clear RENDER_RESULT, RENDER_BCD_RESULT, and RENDER_NEGATIVE
 	STA RENDER_RESULT + 0
 	STA RENDER_RESULT + 1
 	STA RENDER_RESULT + 2
@@ -1135,9 +1137,9 @@ render_number:
 	STA RENDER_RESULT + 5
 	STA RENDER_RESULT + 6
 	STA RENDER_RESULT + 7
-	STA RENDER_RESULT_BCD + 0
-	STA RENDER_RESULT_BCD + 1
-	STA RENDER_RESULT_BCD + 2
+	STA RENDER_BCD_RESULT + 0
+	STA RENDER_BCD_RESULT + 1
+	STA RENDER_BCD_RESULT + 2
 	STA RENDER_NEGATIVE
 
 	LDA CALC_ARG1 + 1
@@ -1146,47 +1148,175 @@ render_number:
 	JSR op_neg
 
 	LDA CALC_RESULT1 + 0
-	STA CALC_ARG1 + 0
+	STA RENDER_BCD_RHS + 0
 	LDA CALC_RESULT1 + 1
-	STA CALC_ARG1 + 1
+	STA RENDER_BCD_RHS + 1
 
 	LDA #$01
 	STA RENDER_NEGATIVE
 
 render_number__arg1_positive:
 
-	LDY #7	; Digit counter starting from LSDigit
+	; At this point, RENDER_BCD_RHS is u16
 
-	; We're going to divide by 10 a lot
-	LDA #10
-	STA CALC_ARG2 + 0
-	LDA #$00
-	STA CALC_ARG2 + 1
+	LDY #16
 
-render_number__loop:
-	; Perform division to get LSDigit
-	JSR op_divmod
+render_number__bcd_loop:
 
-	; Div result goes into next CALC_ARG1
-	LDA CALC_RESULT1 + 0
-	STA CALC_ARG1 + 0
-	LDA CALC_RESULT1 + 1
-	STA CALC_ARG1 + 1
+	; Do block >= 5 checking
 
-	; Mod result is the current digit, ignore all but lowest byte
-	LDA CALC_RESULT2 + 0
+	; Block 0
+	LDA RENDER_BCD_RESULT + 0
+	AND #$0F
+	CMP #$5
+	BMI render_number__skip_block_0
+	; Add 3
+	LDA RENDER_BCD_RESULT + 0
+	CLC
+	ADC #$3
+	STA RENDER_BCD_RESULT + 0
+render_number__skip_block_0:
+
+	; Block 1
+	LDA RENDER_BCD_RESULT + 0
+	AND #$F0
+	CMP #$50
+	BMI render_number__skip_block_1
+	; Add 3
+	LDA RENDER_BCD_RESULT + 0
+	CLC
+	ADC #$30
+	STA RENDER_BCD_RESULT + 0
+render_number__skip_block_1:
+
+	; Block 2
+	LDA RENDER_BCD_RESULT + 1
+	AND #$0F
+	CMP #$5
+	BMI render_number__skip_block_2
+	; Add 3
+	LDA RENDER_BCD_RESULT + 1
+	CLC
+	ADC #$3
+	STA RENDER_BCD_RESULT + 1
+render_number__skip_block_2:
+
+	; Block 3
+	LDA RENDER_BCD_RESULT + 1
+	AND #$F0
+	CMP #$50
+	BMI render_number__skip_block_3
+	; Add 3
+	LDA RENDER_BCD_RESULT + 1
+	CLC
+	ADC #$30
+	STA RENDER_BCD_RESULT + 1
+render_number__skip_block_3:
+
+	; Block 4
+	LDA RENDER_BCD_RESULT + 2
+	AND #$0F
+	CMP #$5
+	BMI render_number__skip_block_4
+	; Add 3
+	LDA RENDER_BCD_RESULT + 2
+	CLC
+	ADC #$3
+	STA RENDER_BCD_RESULT + 2
+render_number__skip_block_4:
+
+	; Do big left shift
+	CLC
+	ROL RENDER_BCD_RHS + 0
+	ROL RENDER_BCD_RHS + 1
+	ROL RENDER_BCD_RESULT + 0
+	ROL RENDER_BCD_RESULT + 1
+	ROL RENDER_BCD_RESULT + 2
+
+	; Loop over all bits
+	DEY
+	BNE render_number__bcd_loop
+
+	; Find the leftmost non-zero digit and store its index in Y, index 7 is LSDigit to match memory layout
+
+	; Check block 4
+	LDY #3
+	LDA RENDER_BCD_RESULT + 2
+	AND #$0F
+	BNE render_number__display_block_4
+
+	; Check block 3
+	LDY #4
+	LDA RENDER_BCD_RESULT + 1
+	AND #$F0
+	BNE render_number__display_block_3
+
+	; Check block 2
+	LDY #5
+	LDA RENDER_BCD_RESULT + 1
+	AND #$0F
+	BNE render_number__display_block_2
+
+	; Check block 1
+	LDY #6
+	LDA RENDER_BCD_RESULT + 0
+	AND #$F0
+	BNE render_number__display_block_1
 	
-	; Grab the digit from the segment table
+	; Check block 0
+	; We don't care about the result here, always render one digit
+	LDY #7
+	JMP render_number__display_block_0
+
+	; Go through each BCD result chunk and turn it into a digit
+	
+render_number__display_block_4:
+	; Block 4
+	LDA RENDER_BCD_RESULT + 2
+	AND #$0F
 	TAX
 	LDA segment_table,x
-	STA RENDER_RESULT,y
+	STA RENDER_RESULT + 3
+	
+render_number__display_block_3:
+	; Block 3
+	LDA RENDER_BCD_RESULT + 1
+	LSR
+	LSR
+	LSR
+	LSR
+	TAX
+	LDA segment_table,x
+	STA RENDER_RESULT + 4
+	
+render_number__display_block_2:
+	; Block 2
+	LDA RENDER_BCD_RESULT + 1
+	AND #$0F
+	TAX
+	LDA segment_table,x
+	STA RENDER_RESULT + 5
 
-	; Loop guard
-	DEY
-	LDA CALC_ARG1 + 0
-	BNE render_number__loop
-	LDA CALC_ARG1 + 1
-	BNE render_number__loop
+render_number__display_block_1:
+	; Block 1
+	LDA RENDER_BCD_RESULT + 0
+	LSR
+	LSR
+	LSR
+	LSR
+	TAX
+	LDA segment_table,x
+	STA RENDER_RESULT + 6
+	
+render_number__display_block_0:
+	; Block 0
+	LDA RENDER_BCD_RESULT + 0
+	AND #$0F
+	TAX
+	LDA segment_table,x
+	STA RENDER_RESULT + 7
+
+	DEY ; Decrement Y so that the negative sign goes one digit to the left of the leftmost digit
 
 	; Optionally render a minus sign
 	LDA RENDER_NEGATIVE
@@ -1198,11 +1328,6 @@ render_number__loop:
 render_number__done:
 
 	; Restore args
-	PLA
-	STA CALC_ARG2 + 1
-	PLA
-	STA CALC_ARG2 + 0
-
 	PLA
 	STA CALC_ARG1 + 1
 	PLA
