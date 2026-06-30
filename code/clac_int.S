@@ -93,6 +93,7 @@ start:
 	LDA #$00
 	STA ENTRY_BUFFER + 0
 	STA ENTRY_BUFFER + 1
+	STA STACK_SIZE
 	
 	; Initialize the display
 	LDY #72
@@ -102,38 +103,6 @@ disp_init_loop:
 	STA DISPLAY_BUFFER,y
 	BNE disp_init_loop
 	STY DISPLAY_INDEX
-
-	JSR draw_display
-
-	; Render 15122 to the second spot on the stack
-	LDA #$12
-	STA CALC_ARG1 + 0
-	LDA #$3B
-	STA CALC_ARG1 + 1
-
-	JSR render_number
-
-	LDY #7
-copy_number_loop_1:
-	LDA RENDER_RESULT,y
-	STA [DISPLAY_BUFFER + 48],y
-	DEY
-	BPL copy_number_loop_1
-
-	; Render -15122 to the top of the stack
-	LDA #$EE
-	STA CALC_ARG1 + 0
-	LDA #$C4
-	STA CALC_ARG1 + 1
-
-	JSR render_number
-
-	LDY #7
-copy_number_loop_2:
-	LDA RENDER_RESULT,y
-	STA [DISPLAY_BUFFER + 56],y
-	DEY
-	BPL copy_number_loop_2
 
 	JSR draw_display
 
@@ -755,7 +724,33 @@ op_shl__done:
 ; Stack Operations
 ;
 
+	; Push a two-byte value to the stack
+	; Uses the A and Y registers
+	; Usage: stack_push { src }
+	MACRO stack_push
+		LDY STACK_SIZE
+		
+		LDA {1} + 0
+		STA STACK,y
+		INY
 
+		LDA {1} + 1
+		STA STACK,y
+		INY
+
+		INY ; Pad two bytes for future i32 support
+		INY
+
+		STY STACK_SIZE
+	ENDM
+
+	; Drop the value from the top of the stack
+	MACRO stack_drop
+		LDA STACK_SIZE
+		SEC
+		SBC #4
+		STA STACK_SIZE
+	ENDM
 
 ; 
 ; Key Press
@@ -783,6 +778,56 @@ process_key:
 	JMP (JUMP_TABLE_TEMP)
 
 process_key__key__enter:
+	; Push the value from the entry buffer onto the stack, then clear the entry buffer
+	; Also move the rendered version of the display buffer to prevent re-rendering
+	
+	stack_push ENTRY_BUFFER
+
+	; Check to make sure the value has actually been rendered (not the case for empty entries)
+	LDA DISPLAY_BUFFER + 71
+	BNE process_key__key__enter_render_done
+
+	LDA ENTRY_BUFFER + 0
+	STA CALC_ARG1 + 0
+	LDA ENTRY_BUFFER + 1
+	STA CALC_ARG1 + 1
+
+	JSR render_number
+
+	LDY #7
+process_key__key__enter_render_copy_loop:
+	LDA RENDER_RESULT,y
+	STA [DISPLAY_BUFFER + 64],y
+	DEY
+	BPL process_key__key__enter_render_copy_loop
+
+process_key__key__enter_render_done:
+
+	; Move the display buffer up eight bytes (one row)
+	; TODO optimize this to only copy the populated parts of the display buffer
+	LDY #63
+	LDX #0
+process_key__key__enter_display_copy_loop:
+	LDA [DISPLAY_BUFFER + 8],x
+	STA DISPLAY_BUFFER,x
+	INX
+	DEY
+	BPL process_key__key__enter_display_copy_loop
+
+	LDA #0
+	LDY #7
+process_key__key__enter_display_clear_loop:
+	STA [DISPLAY_BUFFER + 64],y
+	DEY
+	BPL process_key__key__enter_display_clear_loop
+
+	LDA #00
+	STA ENTRY_BUFFER + 0
+	STA ENTRY_BUFFER + 1
+
+	LDA #01
+	STA FULL_DRAW_NEEDED
+
 	JMP process_key__done
 
 process_key__key__pos_neg:
@@ -818,7 +863,7 @@ process_key__key__backspace:
 	LDA ENTRY_BUFFER + 0
 	STA CALC_ARG1 + 0
 	LDA ENTRY_BUFFER + 1
-	STA CALC_ARG2 + 1
+	STA CALC_ARG1 + 1
 
 	LDA #10
 	STA CALC_ARG2 + 0
@@ -891,6 +936,57 @@ process_key__key__exponent:
 	JMP process_key__done
 
 process_key__key__drop:
+	; Drop the value from the top of the stack
+	; Also move the rendered version of the display buffer to prevent re-rendering
+	stack_drop
+
+	; Move the display buffer up eight bytes (one row)
+	; TODO optimize this to only copy the populated parts of the display buffer
+	LDY #55
+process_key__key__drop_display_copy_loop:
+	LDA DISPLAY_BUFFER,y
+	STA [DISPLAY_BUFFER + 8],y
+	DEY
+	BPL process_key__key__drop_display_copy_loop
+
+	; By now the stack size has already been decremented, if there's still at least 32 bytes left (8 numbers),
+	;   re-render the 8th number in the stack and put it in the display buffer
+	LDA STACK_SIZE
+	SEC
+	SBC #32
+	BMI process_key__key__drop_clear_8th_spot
+	
+	; A now has the offset into the stack of the 8th number
+	TAY
+
+	LDA [STACK + 0],y
+	STA CALC_ARG1 + 0
+	LDA [STACK + 1],y
+	STA CALC_ARG1 + 1
+
+	JSR render_number
+
+	LDY #7
+process_key__key__drop_display_copy_new_loop:
+	LDA RENDER_RESULT,y
+	STA DISPLAY_BUFFER,y
+	DEY
+	BPL process_key__key__drop_display_copy_new_loop
+
+	JMP process_key__key__drop_done
+
+process_key__key__drop_clear_8th_spot:
+	LDA #0
+	LDY #7
+process_key__key__drop_display_clear_loop:
+	STA DISPLAY_BUFFER,y
+	DEY
+	BPL process_key__key__drop_display_clear_loop
+	
+process_key__key__drop_done:
+	LDA #01
+	STA FULL_DRAW_NEEDED
+
 	JMP process_key__done
 
 process_key__key__swap:
@@ -924,6 +1020,18 @@ process_key__key__colon:
 	JMP process_key__done
 
 process_key__key__clear:
+	LDA #0
+	STA STACK_SIZE
+
+	LDY #63
+process_key__key__clear_loop:
+	STA DISPLAY_BUFFER,y
+	DEY
+	BPL process_key__key__clear_loop
+
+	LDA #1
+	STA FULL_DRAW_NEEDED
+
 	JMP process_key__done
 
 process_key__key__digit_zero:
@@ -1480,7 +1588,7 @@ symbol_table:
 	; Pos/Neg -28
 	; Enter -29
 number_table:
-	DC.B 9,-27,6,-28,3,-29,-26,-29,7,8,4,5,1,2,-25,0,-17,-21,-18,-22,-19,-23,-20,-24,-9,-13,-10,-14,-11,-15,-12,-16,0,0,0,0,0,0,0,0
+	DC.B 9,-27,6,-28,3,-29,-26,-29,7,8,4,5,1,2,-25,0,-17,-21,-18,-22,-19,-23,-20,-24,-9,-13,-10,-14,-11,-15,-12,-16,-1,-5,-2,-6,-3,-7,-4,-8
 
 segment_table:
 	DC.B %00111111, %00000110, %01011011, %01001111, %01100110, %01101101, %01111101, %00000111, %01111111, %01101111, %00001001
