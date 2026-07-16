@@ -558,6 +558,7 @@ op_div__result1_negation_done:
 
 ; Signed < operation
 ; Does not use CALC_RESULT2
+; DOES NOT WORK CORRECTLY, REIMPLEMENT BEFORE USING
 op_lt_signed:
     ; Start with MSBytes
     LDA CALC_ARG2 + 1
@@ -569,7 +570,7 @@ op_lt_signed:
 	; All further checks from this point on are unsigned compares so we use the carry bit
 
     LDA CALC_ARG2 + 0
-    LDA CALC_ARG1 + 0
+    CMP CALC_ARG1 + 0
 
     BCC op_lt_signed__false	; If RHS - LHS < 0
     BNE op_lt_signed__true
@@ -721,12 +722,18 @@ op_shl__done:
 
 
 ; 
+; Helper Operations
+;
+
+
+; 
 ; Stack Operations
 ;
 
 	; Push a two-byte value to the stack
 	; Uses the A and Y registers
-	; Usage: stack_push { src }
+	; The value must have already been rendered
+	; Usage: stack_push src display_src
 	MACRO stack_push
 		LDY STACK_SIZE
 		
@@ -742,14 +749,189 @@ op_shl__done:
 		INY
 
 		STY STACK_SIZE
+
+		; Move the display buffer up eight bytes (one row)
+		; TODO optimize this to only copy the populated parts of the display buffer
+		LDY #55
+		LDX #0
+.display_move_up_loop:
+		LDA [DISPLAY_BUFFER + 8],x
+		STA DISPLAY_BUFFER,x
+		INX
+		DEY
+		BPL .display_move_up_loop
+
+		; Copy from display_src into the first stack slot in the display
+		LDY #7
+		LDX #0
+.display_copy_loop:
+		LDA {2},y
+		STA [DISPLAY_BUFFER + 56],y
+		DEY
+		BPL .display_copy_loop
+
+		LDA #01
+		STA FULL_DRAW_NEEDED
 	ENDM
 
 	; Drop the value from the top of the stack
+	; Usage: stack_drop
 	MACRO stack_drop
 		LDA STACK_SIZE
 		SEC
 		SBC #4
+		BCC .done ; Don't drop of the stack is already empty
 		STA STACK_SIZE
+
+		stack_drop_pop_display
+.done:
+	ENDM
+
+	MACRO stack_drop_pop_display
+		; Move the display buffer down eight bytes (one row)
+		; TODO optimize this to only copy the populated parts of the display buffer
+		LDY #55
+.display_copy_loop:
+		LDA DISPLAY_BUFFER,y
+		STA [DISPLAY_BUFFER + 8],y
+		DEY
+		BPL .display_copy_loop
+
+		; By now the stack size has already been decremented, if there's still at least 32 bytes left (8 numbers),
+		;   re-render the 8th number in the stack and put it in the display buffer
+		LDA STACK_SIZE
+		SEC
+		SBC #32
+		BCC .clear_8th_spot
+		
+		; A now has the offset into the stack of the 8th number
+		TAY
+
+		LDA [STACK + 0],y
+		STA CALC_ARG1 + 0
+		LDA [STACK + 1],y
+		STA CALC_ARG1 + 1
+
+		JSR render_number
+
+		LDY #7
+.display_copy_new_loop:
+		LDA RENDER_RESULT,y
+		STA DISPLAY_BUFFER,y
+		DEY
+		BPL .display_copy_new_loop
+
+		JMP .done
+
+.clear_8th_spot:
+		LDA #0
+		LDY #7
+.clear_loop:
+		STA DISPLAY_BUFFER,y
+		DEY
+		BPL .clear_loop
+
+.done:
+
+		LDA #01
+		STA FULL_DRAW_NEEDED
+	ENDM
+
+	; Pop the value form the top of the stack and store it in dst
+	; Usage: stack_pop dest
+	MACRO stack_pop
+		LDA STACK_SIZE
+		SEC
+		SBC #4
+		BCC .done ; Don't drop of the stack is already empty
+		STA STACK_SIZE
+
+		TAY
+		
+		LDA STACK,y
+		STA {1} + 0
+		INY
+
+		LDA STACK,y
+		STA {1} + 1
+		INY
+
+		stack_drop_pop_display
+.done:
+	ENDM
+
+	; Perform a binary operation (x + y -> z)
+	; 
+	; Pull y from the stack, then x
+	; Compute the result
+	; Place the result back on the stack
+	; Result is CALC_RESULT1
+	; 
+	; Uses CALC_ARG1, CALC_ARG2, CALC_RESULT1, and CALC_RESULT2
+	; Does nothing if there are fewer than two operands on the stack
+	; Usage: binop op [result_number]
+	MACRO binop
+		JMP .header_skip
+.done_trampoline:
+		JMP .done
+.header_skip:
+		; If there aren't enough operands on the stack, don't do it
+		LDA STACK_SIZE
+		CMP #8
+		BCC .done_trampoline
+
+		stack_pop CALC_ARG2
+		stack_pop CALC_ARG1
+
+		JSR {1} ; Perform operation
+
+		LDA CALC_RESULT1 + 0
+		STA CALC_ARG1 + 0
+		LDA CALC_RESULT1 + 1
+		STA CALC_ARG1 + 1
+
+		JSR render_number
+
+		stack_push CALC_ARG1, RENDER_RESULT
+
+.done:
+	ENDM
+
+	; Perform a binary operation (x + y -> z)
+	; 
+	; Pull y from the stack, then x
+	; Compute the result
+	; Place the result back on the stack
+	; Result is CALC_RESULT2
+	; 
+	; Uses CALC_ARG1, CALC_ARG2, CALC_RESULT1, and CALC_RESULT2
+	; Does nothing if there are fewer than two operands on the stack
+	; Usage: binop_result2 op [result_number]
+	MACRO binop_result2
+		JMP .header_skip
+.done_trampoline:
+		JMP .done
+.header_skip:
+		; If there aren't enough operands on the stack, don't do it
+		LDA STACK_SIZE
+		CMP #8
+		BCC .done_trampoline
+
+		stack_pop CALC_ARG2
+		stack_pop CALC_ARG1
+
+		JSR {1} ; Perform operation
+
+		LDA CALC_RESULT2 + 0
+		STA CALC_ARG1 + 0
+		LDA CALC_RESULT2 + 1
+		STA CALC_ARG1 + 1
+
+		JSR render_number
+
+		stack_push CALC_ARG1, RENDER_RESULT
+
+.done:
 	ENDM
 
 ; 
@@ -778,10 +960,6 @@ process_key:
 	JMP (JUMP_TABLE_TEMP)
 
 process_key__key__enter:
-	; Push the value from the entry buffer onto the stack, then clear the entry buffer
-	; Also move the rendered version of the display buffer to prevent re-rendering
-	
-	stack_push ENTRY_BUFFER
 
 	; Check to make sure the value has actually been rendered (not the case for empty entries)
 	LDA DISPLAY_BUFFER + 71
@@ -803,16 +981,10 @@ process_key__key__enter_render_copy_loop:
 
 process_key__key__enter_render_done:
 
-	; Move the display buffer up eight bytes (one row)
-	; TODO optimize this to only copy the populated parts of the display buffer
-	LDY #63
-	LDX #0
-process_key__key__enter_display_copy_loop:
-	LDA [DISPLAY_BUFFER + 8],x
-	STA DISPLAY_BUFFER,x
-	INX
-	DEY
-	BPL process_key__key__enter_display_copy_loop
+	; Push the value from the entry buffer onto the stack, then clear the entry buffer
+	; Also move the rendered version of the display buffer to prevent re-rendering
+	
+	stack_push ENTRY_BUFFER, [DISPLAY_BUFFER + 64]
 
 	LDA #0
 	LDY #7
@@ -900,18 +1072,28 @@ process_key__key__sci_not_e:
 	JMP process_key__done
 
 process_key__key__div:
+	binop op_divmod
+
 	JMP process_key__done
 
 process_key__key__mul:
+	binop op_mul
+
 	JMP process_key__done
 
 process_key__key__sub:
+	binop op_sub
+
 	JMP process_key__done
 
 process_key__key__add:
+	binop op_add
+
 	JMP process_key__done
 
 process_key__key__mod:
+	binop_result2 op_divmod
+
 	JMP process_key__done
 
 process_key__key__reciprocal:
@@ -939,53 +1121,6 @@ process_key__key__drop:
 	; Drop the value from the top of the stack
 	; Also move the rendered version of the display buffer to prevent re-rendering
 	stack_drop
-
-	; Move the display buffer up eight bytes (one row)
-	; TODO optimize this to only copy the populated parts of the display buffer
-	LDY #55
-process_key__key__drop_display_copy_loop:
-	LDA DISPLAY_BUFFER,y
-	STA [DISPLAY_BUFFER + 8],y
-	DEY
-	BPL process_key__key__drop_display_copy_loop
-
-	; By now the stack size has already been decremented, if there's still at least 32 bytes left (8 numbers),
-	;   re-render the 8th number in the stack and put it in the display buffer
-	LDA STACK_SIZE
-	SEC
-	SBC #32
-	BMI process_key__key__drop_clear_8th_spot
-	
-	; A now has the offset into the stack of the 8th number
-	TAY
-
-	LDA [STACK + 0],y
-	STA CALC_ARG1 + 0
-	LDA [STACK + 1],y
-	STA CALC_ARG1 + 1
-
-	JSR render_number
-
-	LDY #7
-process_key__key__drop_display_copy_new_loop:
-	LDA RENDER_RESULT,y
-	STA DISPLAY_BUFFER,y
-	DEY
-	BPL process_key__key__drop_display_copy_new_loop
-
-	JMP process_key__key__drop_done
-
-process_key__key__drop_clear_8th_spot:
-	LDA #0
-	LDY #7
-process_key__key__drop_display_clear_loop:
-	STA DISPLAY_BUFFER,y
-	DEY
-	BPL process_key__key__drop_display_clear_loop
-	
-process_key__key__drop_done:
-	LDA #01
-	STA FULL_DRAW_NEEDED
 
 	JMP process_key__done
 
@@ -1161,7 +1296,6 @@ segment_print:
 	RTS
 
 ; Keep these sorted low to high
-; All have -1 for now because using RTS instead of JMP until c02 is implemented
 process_key__jump_table:
 	DC.W process_key__key__enter
 	DC.W process_key__key__pos_neg
