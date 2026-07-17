@@ -58,6 +58,9 @@ JUMP_TABLE_TEMP = $2D	; Two-byte buffer to write an address into to do indirect 
 ENTRY_BUFFER = $2F ; Two-byte buffer for incoming numbers to be entered
 RENDER_BCD_RESULT = $31	; Three-byte buffer (five half-bytes) to compute BCD digits while performing a render
 RENDER_BCD_RHS = $34	; Two-byte buffer for RHS of BCD algo
+RENDER_AUX_BUFFER1 = $36 ; Eight-byte buffer for auxiliary rendered number storage
+RENDER_AUX_BUFFER2 = $3E ; Eight-byte buffer for auxiliary rendered number storage
+RENDER_AUX_BUFFER3 = $46 ; Eight-byte buffer for auxiliary rendered number storage
 
 STACK = $0200	; 252-byte operand stack
 DISPLAY_BUFFER = $0300 ; 72-byte buffer of the display RAM, first byte is MSDigit of #8 in stack
@@ -765,6 +768,104 @@ op_shl__done:
 		STA ENTRY_DRAW_NEEDED
 	ENDM
 
+	; Copy an eight-byte buffer from src to dst
+	; Usage: copy_eight_byte src dst
+	MACRO copy_eight_byte
+		LDY #7
+.loop:
+		LDA {1},y
+		STA {2},y
+		DEY
+		BPL .loop
+	ENDM
+
+	; Swap the top two elements of the stack
+	; Usage: stack_swap
+	MACRO stack_swap
+		JMP .header_skip
+.done_trampoline:
+		JMP .done
+.header_skip:
+		LDA STACK_SIZE
+		CMP #8
+		BCC .done_trampoline ; Don't swap if the stack has fewer than two elements
+
+		copy_eight_byte [DISPLAY_BUFFER + 56], RENDER_AUX_BUFFER1
+		stack_pop CALC_ARG1
+		copy_eight_byte [DISPLAY_BUFFER + 56], RENDER_AUX_BUFFER2
+		stack_pop CALC_ARG2
+
+		stack_push CALC_ARG1, RENDER_AUX_BUFFER1
+		stack_push CALC_ARG2, RENDER_AUX_BUFFER2
+.done:
+	ENDM
+
+	; Rotate the top three elements of the stack
+	; Usage: stack_rotate
+	MACRO stack_rotate
+		JMP .header_skip
+.done_trampoline:
+		JMP .done
+.header_skip:
+		LDA STACK_SIZE
+		CMP #12
+		BCC .done_trampoline ; Don't swap if the stack has fewer than two elements
+
+		copy_eight_byte [DISPLAY_BUFFER + 56], RENDER_AUX_BUFFER1
+		stack_pop CALC_ARG1
+		copy_eight_byte [DISPLAY_BUFFER + 56], RENDER_AUX_BUFFER2
+		stack_pop CALC_ARG2
+		copy_eight_byte [DISPLAY_BUFFER + 56], RENDER_AUX_BUFFER3
+		stack_pop CALC_RESULT1
+
+		stack_push CALC_ARG2, RENDER_AUX_BUFFER2
+		stack_push CALC_ARG1, RENDER_AUX_BUFFER1
+		stack_push CALC_RESULT1, RENDER_AUX_BUFFER3
+.done:
+	ENDM
+
+	; Pop n off the top of the stack and push (a copy of) the n-th value in the stack to the top
+	; 1-indexed, ..., x, 1 =pick=> ..., x, x
+	; Will have no effect if stack has fewer than one element
+	; Will pop n from stack but push nothing on if fewer than n elements are on stack after pop
+	; Usage: stack_pick
+	MACRO stack_pick
+		JMP .header_skip
+.done_trampoline:
+		JMP .done
+.header_skip:
+		LDA STACK_SIZE
+		CMP #4
+		BCC .done_trampoline ; Don't pick if the stack has fewer than one element
+		
+		; Pop top element off the stack and multiply it by 4 to get offset into the stack
+		stack_pop CALC_ARG1
+		LDA CALC_ARG1 + 0
+		BEQ .done ; If we're trying to pick the 0-th element, that also doesn't work
+		ASL
+		ASL
+		STA CALC_ARG1 + 0
+
+		; Subtract this offset from the top of the stack
+		LDA STACK_SIZE
+		SEC
+		SBC CALC_ARG1 + 0
+		BCC .done ; If subtraction underflowed, we picked too far down the stack, give up
+
+		; Now we can index into the stack to get the value to pick
+		TAY
+		LDA [STACK + 0],y
+		STA CALC_ARG1 + 0
+		LDA [STACK + 1],y
+		STA CALC_ARG1 + 1
+		
+		; TODO optimize this to only render if it's off-screen
+		JSR render_number
+
+		stack_push CALC_ARG1, RENDER_RESULT
+.done:
+	ENDM
+
 	; Push a two-byte value to the stack
 	; Uses the A and Y registers
 	; The value must have already been rendered
@@ -877,7 +978,7 @@ op_shl__done:
 		LDA STACK_SIZE
 		SEC
 		SBC #4
-		BCC .done ; Don't drop of the stack is already empty
+		BCC .done ; Don't drop if the stack is already empty
 		STA STACK_SIZE
 
 		TAY
@@ -1217,12 +1318,33 @@ process_key__key__drop_stack:
 	JMP process_key__done
 
 process_key__key__swap:
+	entry_buffer_nonempty
+	BEQ process_key__key__swap_entry_clear
+
+	JSR process_enter
+
+process_key__key__swap_entry_clear:
+	stack_swap
 	JMP process_key__done
 
 process_key__key__rotate:
+	entry_buffer_nonempty
+	BEQ process_key__key__rotate_entry_clear
+
+	JSR process_enter
+
+process_key__key__rotate_entry_clear:
+	stack_rotate
 	JMP process_key__done
 
 process_key__key__pick:
+	entry_buffer_nonempty
+	BEQ process_key__key__pick_entry_clear
+
+	JSR process_enter
+
+process_key__key__pick_entry_clear:
+	stack_pick
 	JMP process_key__done
 
 process_key__key__skip:
