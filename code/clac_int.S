@@ -730,6 +730,41 @@ op_shl__done:
 ; Stack Operations
 ;
 
+	; Check to see if the value being entered is non-empty
+	; Stores result in A register. 0 if empty, 1 if non-empty
+	; Usage: entry_buffer_nonempty
+	MACRO entry_buffer_nonempty
+		LDY #7
+.display_check_loop:
+		LDA [DISPLAY_BUFFER + 64],y
+		BNE .non_empty
+		DEY
+		BPL .display_check_loop
+
+		; Empty
+		LDA #0
+		JMP .done
+.non_empty:
+		LDA #1
+.done:
+	ENDM
+
+	MACRO clear_entry
+		LDA #0
+		LDY #7
+.enter_display_clear_loop:
+		STA [DISPLAY_BUFFER + 64],y
+		DEY
+		BPL .enter_display_clear_loop
+
+		LDA #00
+		STA ENTRY_BUFFER + 0
+		STA ENTRY_BUFFER + 1
+
+		LDA #1
+		STA ENTRY_DRAW_NEEDED
+	ENDM
+
 	; Push a two-byte value to the stack
 	; Uses the A and Y registers
 	; The value must have already been rendered
@@ -763,7 +798,6 @@ op_shl__done:
 
 		; Copy from display_src into the first stack slot in the display
 		LDY #7
-		LDX #0
 .display_copy_loop:
 		LDA {2},y
 		STA [DISPLAY_BUFFER + 56],y
@@ -938,29 +972,9 @@ op_shl__done:
 ; Key Press
 ;
 
-; The incoming key code is stored in the A register
-; X and Y are saved by the caller, A does not need to be saved
-process_key:
-	; First, add 29 to the keycode to make them all 0-whatever ([-29, 9] -> [0 - 38])
-	; This range must be at most [0,127] to keep the jump table offset in 8 bits
-	CLC
-	ADC #29
-	; Then double it to get a word-width offset
-	ASL
-	; Then put this value in Y to do the indexing
-	TAY
-	
-	; Load the address from the jump table into the temp variable
-	LDA process_key__jump_table,y
-	STA JUMP_TABLE_TEMP
-	LDA [process_key__jump_table + 1],y
-	STA JUMP_TABLE_TEMP + 1
-	
-	; Jump to branch in switch case
-	JMP (JUMP_TABLE_TEMP)
-
-process_key__key__enter:
-
+; Functionality of ENTER key separated so it can be re-used to implicitly
+;   push the value being entered onto the stack before performing an op
+process_enter:
 	; Check to make sure the value has actually been rendered (not the case for empty entries)
 	LDA DISPLAY_BUFFER + 71
 	BNE process_key__key__enter_render_done
@@ -986,27 +1000,51 @@ process_key__key__enter_render_done:
 	
 	stack_push ENTRY_BUFFER, [DISPLAY_BUFFER + 64]
 
-	LDA #0
-	LDY #7
-process_key__key__enter_display_clear_loop:
-	STA [DISPLAY_BUFFER + 64],y
-	DEY
-	BPL process_key__key__enter_display_clear_loop
-
-	LDA #00
-	STA ENTRY_BUFFER + 0
-	STA ENTRY_BUFFER + 1
+	clear_entry
 
 	LDA #01
 	STA FULL_DRAW_NEEDED
 
+	RTS
+
+; The incoming key code is stored in the A register
+; X and Y are saved by the caller, A does not need to be saved
+process_key:
+	; First, add 29 to the keycode to make them all 0-whatever ([-29, 9] -> [0 - 38])
+	; This range must be at most [0,127] to keep the jump table offset in 8 bits
+	CLC
+	ADC #29
+	; Then double it to get a word-width offset
+	ASL
+	; Then put this value in Y to do the indexing
+	TAY
+	
+	; Load the address from the jump table into the temp variable
+	LDA process_key__jump_table,y
+	STA JUMP_TABLE_TEMP
+	LDA [process_key__jump_table + 1],y
+	STA JUMP_TABLE_TEMP + 1
+	
+	; Jump to branch in switch case
+	JMP (JUMP_TABLE_TEMP)
+
+process_key__key__enter:
+	entry_buffer_nonempty
+	BEQ process_key__key__enter_done
+
+	JSR process_enter
+
+process_key__key__enter_done:
 	JMP process_key__done
 
 process_key__key__pos_neg:
+	entry_buffer_nonempty
+	BEQ process_key__key__pos_neg_done
+
 	LDA ENTRY_BUFFER + 0
 	STA CALC_ARG1 + 0
 	LDA ENTRY_BUFFER + 1
-	STA CALC_ARG2 + 1
+	STA CALC_ARG1 + 1
 
 	JSR op_neg
 
@@ -1029,9 +1067,13 @@ process_key__key__pos_neg_copy_loop:
 	LDA #$01
 	STA ENTRY_DRAW_NEEDED
 
+process_key__key__pos_neg_done:
 	JMP process_key__done
 
 process_key__key__backspace:
+	entry_buffer_nonempty
+	BEQ process_key__key__backspace_done
+
 	LDA ENTRY_BUFFER + 0
 	STA CALC_ARG1 + 0
 	LDA ENTRY_BUFFER + 1
@@ -1043,6 +1085,16 @@ process_key__key__backspace:
 	STA CALC_ARG2 + 1
 
 	JSR op_divmod
+
+	LDA CALC_RESULT1 + 0
+	BNE process_key__key__backspace_entry_nonempty
+	LDA CALC_RESULT1 + 1
+	BNE process_key__key__backspace_entry_nonempty
+
+	clear_entry
+	JMP process_key__key__backspace_done
+
+process_key__key__backspace_entry_nonempty:
 
 	LDA CALC_RESULT1 + 0
 	STA CALC_ARG1 + 0
@@ -1063,6 +1115,7 @@ process_key__key__backspace_copy_loop:
 	LDA #$01
 	STA ENTRY_DRAW_NEEDED
 
+process_key__key__backspace_done:
 	JMP process_key__done
 
 process_key__key__decimal:
@@ -1072,26 +1125,56 @@ process_key__key__sci_not_e:
 	JMP process_key__done
 
 process_key__key__div:
+	entry_buffer_nonempty
+	BEQ process_key__key__div_entry_clear
+
+	JSR process_enter
+
+process_key__key__div_entry_clear:
 	binop op_divmod
 
 	JMP process_key__done
 
 process_key__key__mul:
+	entry_buffer_nonempty
+	BEQ process_key__key__mul_entry_clear
+
+	JSR process_enter
+
+process_key__key__mul_entry_clear:
 	binop op_mul
 
 	JMP process_key__done
 
 process_key__key__sub:
+	entry_buffer_nonempty
+	BEQ process_key__key__sub_entry_clear
+
+	JSR process_enter
+
+process_key__key__sub_entry_clear:
 	binop op_sub
 
 	JMP process_key__done
 
 process_key__key__add:
+	entry_buffer_nonempty
+	BEQ process_key__key__add_entry_clear
+
+	JSR process_enter
+
+process_key__key__add_entry_clear:
 	binop op_add
 
 	JMP process_key__done
 
 process_key__key__mod:
+	entry_buffer_nonempty
+	BEQ process_key__key__mod_entry_clear
+
+	JSR process_enter
+
+process_key__key__mod_entry_clear:
 	binop_result2 op_divmod
 
 	JMP process_key__done
@@ -1118,6 +1201,15 @@ process_key__key__exponent:
 	JMP process_key__done
 
 process_key__key__drop:
+	entry_buffer_nonempty
+	BEQ process_key__key__drop_stack
+
+	; Drop the entry box instead of the stack
+	clear_entry
+
+	JMP process_key__done
+
+process_key__key__drop_stack:
 	; Drop the value from the top of the stack
 	; Also move the rendered version of the display buffer to prevent re-rendering
 	stack_drop
@@ -1163,6 +1255,8 @@ process_key__key__clear_loop:
 	STA DISPLAY_BUFFER,y
 	DEY
 	BPL process_key__key__clear_loop
+
+	clear_entry
 
 	LDA #1
 	STA FULL_DRAW_NEEDED
